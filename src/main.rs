@@ -182,6 +182,13 @@ async fn create_directory_if_not_exists(dir: &str) -> Result<()> {
 async fn download_tarball(tarball_url: &str, scope: &str, name: &str) -> Result<()> {
     let client = Client::new();
     let response = client.get(tarball_url).send().await?;
+    if !response.status().is_success() {
+        return Err(anyhow::anyhow!(
+            "Failed to download tarball from {}: {}",
+            tarball_url,
+            response.status()
+        ));
+    }
     let content = response.bytes().await?;
 
     let tar = GzDecoder::new(Cursor::new(content));
@@ -189,15 +196,34 @@ async fn download_tarball(tarball_url: &str, scope: &str, name: &str) -> Result<
 
     // Ensure the base node_modules directory exists
     create_directory_if_not_exists("./node_modules").await?;
-    let target_dir = format!("./node_modules/{}/{}", scope.trim_start_matches('@'), name);
+
+    // If scope is not empty, use @<scope>/<name>, else just <name>
+    let target_dir = if !scope.is_empty() {
+        format!("./node_modules/@{}/{}", scope.trim_start_matches('@'), name)
+    } else {
+        format!("./node_modules/{}", name)
+    };
     create_directory_if_not_exists(&target_dir).await?;
 
-    archive.unpack(&target_dir).with_context(|| {
-        format!(
-            "Failed to unpack tarball for {}/{} into {}",
-            scope, name, target_dir
-        )
-    })?;
+    println!(
+        "Unpacking tarball for {}/{} into {}",
+        scope, name, target_dir
+    );
+
+    // Extract the tarball into the target directory, stripping the first component (usually "package/")
+    for entry in archive.entries().with_context(|| format!("Failed to read entries from tarball {}", tarball_url))? {
+        let mut entry = entry?;
+        let path = entry.path()?;
+        let mut components = path.components();
+        components.next(); // Strip the first component ("package" or similar)
+        let stripped_path: std::path::PathBuf = components.as_path().to_path_buf();
+        let out_path = Path::new(&target_dir).join(&stripped_path);
+        if let Some(parent) = out_path.parent() {
+            fs::create_dir_all(parent).with_context(|| format!("Failed to create directory: {:?}", parent))?;
+        }
+        entry.unpack(&out_path).with_context(|| format!("Failed to unpack entry to {:?}", out_path))?;
+    }
+
 
     Ok(())
 }
@@ -286,6 +312,55 @@ async fn handle_add_command(specifier: String, is_dev: bool) -> Result<()> {
                 .and_then(|t| t.as_str())
                 .ok_or_else(|| anyhow::anyhow!("Tarball URL not found in version data"))?;
             download_tarball(tarball_url, scope, name).await?;
+
+            // todo(@AugustinMauroy): add logic to update espm.json with the new dependency
+
+            return Ok(());
+        }
+        "npm" => {
+            let name = specifier.name.as_deref().unwrap_or("unknown");
+            let version = specifier.version.as_deref().unwrap_or("latest");
+
+            if (version == "latest" || version.is_empty()) && !specifier.scope.is_some() {
+                Logger::warn(&format!(
+                    "Adding NPM package {} without a specific version is not supported yet. Please specify a version.",
+                    name.cyan()
+                ));
+                return Ok(());
+            }
+
+            Logger::info(&format!(
+                "Adding NPM package {}@{} as {}",
+                name.cyan(),
+                version.bold(),
+                if is_dev {
+                    "development dependency"
+                } else {
+                    "dependency"
+                }
+            ));
+
+            
+            let npm_package_url = if let Some(scope) = &specifier.scope {
+                format!(
+                    "https://registry.npmjs.org/@{}/{}/-/{}-{}.tgz",
+                    scope.trim_start_matches('@'),
+                    name,
+                    name,
+                    version
+                )
+            } else {
+                format!(
+                    "https://registry.npmjs.org/{}/-/{}-{}.tgz",
+                    name, name, version
+                )
+            };
+            Logger::info(&format!(
+                "Fetching package tarball from: {}",
+                npm_package_url.cyan()
+            ));
+
+            download_tarball(&npm_package_url, "", name).await?;
 
             // todo(@AugustinMauroy): add logic to update espm.json with the new dependency
 
