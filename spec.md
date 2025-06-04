@@ -8,10 +8,8 @@
 
 ## Questions ???
 
-- How to store the import map, knowing that you need dependence and dev dependence?
-- How to store the package information, knowing that you need to store the version and the scope?
-- How to download the CLI tool
 - How to handle workspaces?
+- How to download the CLI tool
 - How to execute a package like `npx`?
 
 ## CLI
@@ -30,12 +28,60 @@
 
 `espm setup` + `version` => setup the version of CLI needed for the project
 
+## Download dependencies
+
+- use `espm add` to add a package
+- use `espm install` to download all dependencies
+- use `espm update` to update a package
+- use `espm remove` to remove a package
+- by default, the tool will store the downloaded packages in a local cache directory (e.g. `~/.espm/cache`) and create a symlink in the `node_modules` directory of the project
+
 ## Files
 
-- `espm.json` - ???
-- `jsr.json(c)` - JavaScript Registry configuration file (https://jsr.io)
-- `package.json` - Node.js related files E.G. `scripts`, `type`
-- `import_map.json` - Import map for the project
+- `espm.json(c)` - ???
+
+```jsonc
+{
+    "name": "@scope/my-project",
+    "version": "1.0.0",
+    "description": "My project description",
+    "license": "MIT",
+    // JSR exports
+    "exports" : {
+        ".": "./index.js",
+        "./submodule": "./submodule.js"
+    },
+    // JSR publish
+    "publish": {
+        "include": [
+            "LICENSE",
+            "README.md",
+            "src/**/*.ts",
+            "jsr.json"
+        ],
+        "exclude": ["src/**/*.test.ts"]
+    },
+    // NPM style workspaces if this setup considered a monorepo 
+    // So this espm.json is the root of the monorepo and can't be published
+    // if this is include cli will thow an error if it's found `publish`, "exports" keys
+    "workspaces": [
+        "packages/*"
+    ],
+    "import_map": {
+        "imports": {
+            "my-lib": "https://cdn.example.com/my-lib.js",
+            "@foo/bar": "jsr:@foo/bar@1.0.0",
+            "lodash": "npm:lodash@4.17.21"
+        }
+    },
+    "import_map_dev": {
+        "imports": {
+            "my-dev-lib": "jsr:@foo/my-dev-lib@1.0.0"
+        }
+    },
+    "espm_version": "0.0.0",
+}
+```
 
 ## Related links
 

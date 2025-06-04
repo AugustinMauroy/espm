@@ -1,0 +1,113 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema",
+  "$id": "TBD",
+  "title": "ESPM Configuration File Schema",
+  "description": "Schema for the ESPM package manager configuration file",
+  "type": "object",
+  "required": ["name"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "The name of the package. Should be scoped.",
+      "pattern": "^@[a-z0-9-]+/[a-z0-9-]+$",
+      "examples": ["@scope/my-project"]
+    },
+    "version": {
+      "type": "string",
+      "description": "The version of the package following semver.",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$",
+      "examples": ["1.0.0", "0.1.0-beta.1"]
+    },
+    "description": {
+      "type": "string",
+      "description": "A short description of the package"
+    },
+    "license": {
+      "type": "string",
+      "description": "The license of the package",
+      "examples": ["MIT", "Apache-2.0", "ISC"]
+    },
+    "exports": {
+      "description": "Map of export paths to their corresponding file paths",
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "The path to the main module",
+          "pattern": "^\\./.*$"
+        },
+        {
+          "type": "object",
+          "description": "A map of package exports to files",
+          "patternProperties": {
+            "^\\.(/.*)?$": {
+              "type": "string",
+              "pattern": "^\\./.*$"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "publish": {
+      "type": "object",
+      "description": "Configuration for package publishing",
+      "properties": {
+        "include": {
+          "type": "array",
+          "description": "List of files, directories or globs to include in the published package",
+          "items": {
+            "type": "string"
+          }
+        },
+        "exclude": {
+          "type": "array",
+          "description": "List of files, directories or globs to exclude from the published package",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "import_map": {
+      "type": "object",
+      "description": "Import map configuration for production dependencies",
+      "required": ["imports"],
+      "properties": {
+        "imports": {
+          "type": "object",
+          "description": "Map of module specifiers to their URLs",
+          "patternProperties": {
+            "^.*$": {
+              "type": "string",
+              "description": "URL or specifier for the package"
+            }
+          }
+        }
+      }
+    },
+    "import_map_dev": {
+      "type": "object",
+      "description": "Import map configuration for development dependencies",
+      "required": ["imports"],
+      "properties": {
+        "imports": {
+          "type": "object",
+          "description": "Map of module specifiers to their URLs for development",
+          "patternProperties": {
+            "^.*$": {
+              "type": "string",
+              "description": "URL or specifier for the development package"
+            }
+          }
+        }
+      }
+    },
+    "espm_version": {
+      "type": "string",
+      "description": "Version of the ESPM package manager used to create this configuration",
+      "default": "1.0.0",
+      "examples": ["1.0.0", "2.0.0"],
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$"
+    }
+  }
+}
