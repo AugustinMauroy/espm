@@ -35,9 +35,8 @@ impl Logger {
     }
 }
 
-/// espm - ECMAScript Package Manager
 #[derive(Parser, Debug)]
-#[clap(author, version, about, long_about = None)]
+#[clap(version, about= "espm - ECMAScript Package Manager", long_about = None)]
 struct Cli {
     #[clap(subcommand)]
     command: Commands,
@@ -56,6 +55,10 @@ enum Commands {
         #[clap(short, long, default_value = "false")]
         dev: bool,
     },
+    #[clap(name = "remove", about = "Remove a dependency")]
+    Remove {
+        package: String,
+    },
     // install prod dependencies listed in espm.json if dev is false, or all dependencies if dev is true
     #[clap(name = "install", about = "Install dependencies")]
     Install {
@@ -63,11 +66,24 @@ enum Commands {
         #[clap(short, long, default_value = "false")]
         dev: bool,
     },
+    // Update a package dependency
+    #[clap(name = "update", about = "Update a package dependency")]
+    Update {
+        // The package source (e.g., jsr:@scope/pkg@version, npm:pkg@version, file:../path, http(s)://url/pkg.tgz)
+        #[clap(value_parser, required = true)]
+        specifier: String,
+    },
     #[clap(name = "init", about = "Initialize espm.json")]
     Init,
-    #[clap(name = "remove", about = "Remove a dependency")]
-    Remove {
-        package: String,
+    #[clap(name = "help", about = "Display help information")]
+    Publish {
+        #[clap(long, default_value = "false")]
+        npm: bool,
+    },
+    # [clap(name = "setup", about = "Use the right version of espm")]
+    Setup {
+        #[clap(long, default_value = "latest")]
+        version: String,
     }
 }
 
@@ -348,7 +364,7 @@ async fn download_npm_package(name: &str, version: &str) -> Result<()> {
     Ok(())
 }
 
-async fn download_package(specifier: &Specifier, is_dev: bool) -> Result<()> {
+async fn download_package(specifier: &Specifier, _is_dev: bool) -> Result<()> {
     let scope = specifier.scope.as_deref().unwrap_or("default");
     let name = specifier.name.as_deref().unwrap_or("unknown");
     let version = specifier.version.as_deref().unwrap_or("latest");
@@ -659,6 +675,15 @@ async fn main() -> Result<()> {
         Commands::Install { dev } => handle_install_command(dev).await?,
         Commands::Init => handle_init_command().await?,
         Commands::Remove { package } => handle_remove_command(package).await?,
+        Commands::Update { .. } => {
+            Logger::warn("The 'update' command is not implemented yet.");
+        }
+        Commands::Publish { .. } => {
+            Logger::warn("The 'publish' command is not implemented yet.");
+        }
+        Commands::Setup { .. } => {
+            Logger::warn("The 'setup' command is not implemented yet.");
+        }
     }
 
     Ok(())
