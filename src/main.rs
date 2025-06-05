@@ -310,64 +310,62 @@ async fn download_npm_package(name: &str, version: &str) -> Result<()> {
     Ok(())
 }
 
-async fn handle_add_command(specifier: String, is_dev: bool) -> Result<()> {
-    let specifier = Specifier::from_string(&specifier)
-        .with_context(|| format!("Failed to parse specifier: {}", specifier))?;
+async fn download_package(specifier: &Specifier, is_dev: bool) -> Result<()> {
+    let scope = specifier.scope.as_deref().unwrap_or("default");
+    let name = specifier.name.as_deref().unwrap_or("unknown");
+    let version = specifier.version.as_deref().unwrap_or("latest");
 
     match specifier.kind.as_str() {
         "jsr" => {
-            let scope = specifier.scope.as_deref().unwrap_or("default");
-            let name = specifier.name.as_deref().unwrap_or("unknown");
-            let version = specifier.version.as_deref().unwrap_or("latest");
-
             download_jsr_package(scope, name, version).await?;
-
-            // todo(@AugustinMauroy): add logic to update espm.json with the new dependency
-
-            return Ok(());
         }
         "npm" => {
-            let name = specifier.name.as_deref().unwrap_or("unknown");
-            let version = specifier.version.as_deref().unwrap_or("latest");
-
-            if (version == "latest" || version.is_empty()) && !specifier.scope.is_some() {
+            // Gérer le cas "latest" sans version explicite
+            if (version == "latest" || version.is_empty()) && specifier.scope.is_none() {
                 Logger::warn(&format!(
-                    "Adding NPM package {} without a specific version is not supported yet. Please specify a version.",
+                    "Adding NPM package {} sans version n’est pas encore géré. Veuillez préciser une version.",
                     name.cyan()
                 ));
                 return Ok(());
             }
-
             Logger::info(&format!(
-                "Adding NPM package {}@{} as {}",
+                "Adding NPM package {}@{} comme {}",
                 name.cyan(),
                 version.bold(),
                 if is_dev {
-                    "development dependency"
+                    "dev dependency"
                 } else {
                     "dependency"
                 }
             ));
 
             download_npm_package(name, version).await?;
-
-            // todo(@AugustinMauroy): add logic to update espm.json with the new dependency
-
-            return Ok(());
         }
         "file" => {
-            Logger::info("Adding file:// isn nott supported yet");
+            Logger::info("Adding file:// non encore supporté");
+            // vous pourriez appeler quelque chose comme download_file_package(...)
         }
         "http" | "https" => {
-            Logger::info("Adding HTTP(S) is not supported yet");
+            Logger::info("Adding HTTP(S) non encore supporté");
+            // vous pourriez appeler quelque chose comme download_http_package(...)
         }
         _ => {
             return Err(anyhow::anyhow!(
-                "Unsupported package kind: {}",
+                "Kind de package non pris en charge: {}",
                 specifier.kind
             ));
         }
     }
+    Ok(())
+}
+
+async fn handle_add_command(specifier: String, is_dev: bool) -> Result<()> {
+    let specifier = Specifier::from_string(&specifier)
+        .with_context(|| format!("Failed to parse specifier: {}", specifier))?;
+
+    download_package(&specifier, is_dev)
+        .await
+        .with_context(|| format!("Failed to download package: {}", specifier.source))?;
 
     Ok(())
 }
@@ -413,66 +411,17 @@ async fn handle_install_command(dev: bool) -> Result<()> {
                 return Ok(());
             }
             Logger::info("Installing development dependencies...");
- 
+
             for (key, value) in espm_json.import_map_dev.as_ref().unwrap().imports.iter() {
                 let specifier = Specifier::from_string(value)?;
-                match specifier.kind.as_str() {
-                    "jsr" => {
-                        let scope = specifier.scope.as_deref().unwrap_or("default");
-                        let name = specifier.name.as_deref().unwrap_or("unknown");
-                        let version = specifier.version.as_deref().unwrap_or("latest");
-
-                        download_jsr_package(scope, name, version).await?;
-                    }
-                    "npm" => {
-                        let name = specifier.name.as_deref().unwrap_or("unknown");
-                        let version = specifier.version.as_deref().unwrap_or("latest");
-
-                        download_npm_package(name, version).await?;
-                    }
-                    "file" => {
-                        Logger::info("Adding file:// is not supported yet");
-                    }
-                    "http" | "https" => {
-                        Logger::info("Adding HTTP(S) is not supported yet");
-                    }
-                    _ => {
-                        return Err(anyhow::anyhow!(
-                            "Unsupported package kind: {}",
-                            specifier.kind
-                        ));
-                    }
-                }
+                download_package(&specifier, true).await?;
             }
-             for (key, value) in espm_json.import_map.as_ref().unwrap().imports.iter() {
+            if espm_json.import_map.is_none() {
+                return Ok(());
+            }
+            for (key, value) in espm_json.import_map.as_ref().unwrap().imports.iter() {
                 let specifier = Specifier::from_string(value)?;
-                match specifier.kind.as_str() {
-                    "jsr" => {
-                        let scope = specifier.scope.as_deref().unwrap_or("default");
-                        let name = specifier.name.as_deref().unwrap_or("unknown");
-                        let version = specifier.version.as_deref().unwrap_or("latest");
-
-                        download_jsr_package(scope, name, version).await?;
-                    }
-                    "npm" => {
-                        let name = specifier.name.as_deref().unwrap_or("unknown");
-                        let version = specifier.version.as_deref().unwrap_or("latest");
-
-                        download_npm_package(name, version).await?;
-                    }
-                    "file" => {
-                        Logger::info("Adding file:// is not supported yet");
-                    }
-                    "http" | "https" => {
-                        Logger::info("Adding HTTP(S) is not supported yet");
-                    }
-                    _ => {
-                        return Err(anyhow::anyhow!(
-                            "Unsupported package kind: {}",
-                            specifier.kind
-                        ));
-                    }
-                }
+                download_package(&specifier, false).await?;
             }
             return Ok(());
         } else {
@@ -485,33 +434,7 @@ async fn handle_install_command(dev: bool) -> Result<()> {
 
             for (key, value) in espm_json.import_map.as_ref().unwrap().imports.iter() {
                 let specifier = Specifier::from_string(value)?;
-                match specifier.kind.as_str() {
-                    "jsr" => {
-                        let scope = specifier.scope.as_deref().unwrap_or("default");
-                        let name = specifier.name.as_deref().unwrap_or("unknown");
-                        let version = specifier.version.as_deref().unwrap_or("latest");
-
-                        download_jsr_package(scope, name, version).await?;
-                    }
-                    "npm" => {
-                        let name = specifier.name.as_deref().unwrap_or("unknown");
-                        let version = specifier.version.as_deref().unwrap_or("latest");
-
-                        download_npm_package(name, version).await?;
-                    }
-                    "file" => {
-                        Logger::info("Adding file:// is not supported yet");
-                    }
-                    "http" | "https" => {
-                        Logger::info("Adding HTTP(S) is not supported yet");
-                    }
-                    _ => {
-                        return Err(anyhow::anyhow!(
-                            "Unsupported package kind: {}",
-                            specifier.kind
-                        ));
-                    }
-                }
+                download_package(&specifier, false).await?;
             }
             return Ok(());
         }
