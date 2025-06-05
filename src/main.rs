@@ -65,10 +65,15 @@ enum Commands {
     },
     #[clap(name = "init", about = "Initialize espm.json")]
     Init,
+    #[clap(name = "remove", about = "Remove a dependency")]
+    Remove {
+        package: String,
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 struct ImportMap {
+    #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
     imports: std::collections::HashMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     scopes: Option<std::collections::HashMap<String, std::collections::HashMap<String, String>>>,
@@ -78,10 +83,18 @@ struct ImportMap {
 struct EspmJson {
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>, // Name of the project, can be inferred from the current directory
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "is_import_map_empty")]
     import_map: Option<ImportMap>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "is_import_map_empty")]
     import_map_dev: Option<ImportMap>,
+}
+
+// Helper function to skip serializing ImportMap if it's None or its imports are empty
+fn is_import_map_empty(map: &Option<ImportMap>) -> bool {
+    match map {
+        None => true,
+        Some(m) => m.imports.is_empty(),
+    }
 }
 
 #[derive(Debug)]
@@ -530,6 +543,104 @@ async fn handle_init_command() -> Result<()> {
     Ok(())
 }
 
+async fn handle_remove_command(package: String) -> Result<()> {
+    let espm_json_path = get_espm_json_path().await?;
+    let content = fs::read_to_string(&espm_json_path)?;
+    let mut espm_json: EspmJson = serde_json::from_str(&content)?;
+
+    let mut found = false;
+
+    // Try to parse as a specifier, fallback to using as a plain package name
+    let (possible_names, original_specifier) = match Specifier::from_string(&package) {
+        Ok(spec) => {
+            let mut names = Vec::new();
+            if let Some(scope) = &spec.scope {
+                if let Some(name) = &spec.name {
+                    names.push(format!("@{}/{}", scope, name));
+                }
+            }
+            if let Some(name) = &spec.name {
+                names.push(name.clone());
+            }
+            (names, Some(spec.source))
+        }
+        Err(_) => (vec![package.clone()], None),
+    };
+
+    // Remove from import_map
+    if let Some(import_map) = &mut espm_json.import_map {
+        for name in &possible_names {
+            if import_map.imports.remove(name).is_some() {
+                found = true;
+            }
+        }
+        // Also try to remove by specifier string if present
+        if let Some(spec_str) = &original_specifier {
+            let to_remove: Vec<_> = import_map
+                .imports
+                .iter()
+                .filter(|(_, v)| *v == spec_str)
+                .map(|(k, _)| k.clone())
+                .collect();
+            for k in to_remove {
+                import_map.imports.remove(&k);
+                found = true;
+            }
+        }
+    }
+
+    // Remove from import_map_dev
+    if let Some(import_map_dev) = &mut espm_json.import_map_dev {
+        for name in &possible_names {
+            if import_map_dev.imports.remove(name).is_some() {
+                found = true;
+            }
+        }
+        if let Some(spec_str) = &original_specifier {
+            let to_remove: Vec<_> = import_map_dev
+                .imports
+                .iter()
+                .filter(|(_, v)| *v == spec_str)
+                .map(|(k, _)| k.clone())
+                .collect();
+            for k in to_remove {
+                import_map_dev.imports.remove(&k);
+                found = true;
+            }
+        }
+    }
+
+    if !found {
+        Logger::warn(&format!("Package '{}' not found in espm.json.", package));
+    } else {
+        // Remove from node_modules
+        for name in &possible_names {
+            let node_modules_path = Path::new("./node_modules");
+            let pkg_path = node_modules_path.join(name);
+            if pkg_path.exists() {
+                if let Err(e) = fs::remove_dir_all(&pkg_path) {
+                    Logger::warn(&format!("Failed to remove directory {:?}: {}", pkg_path, e));
+                }
+            }
+            // If the package is scoped, remove the scope directory if empty
+            if name.starts_with('@') {
+                if let Some((scope, _)) = name.split_once('/') {
+                    let scope_path = node_modules_path.join(scope);
+                    if scope_path.exists() && scope_path.read_dir().map(|mut d| d.next().is_none()).unwrap_or(false) {
+                        if let Err(e) = fs::remove_dir_all(&scope_path) {
+                            Logger::warn(&format!("Failed to remove scope directory {:?}: {}", scope_path, e));
+                        }
+                    }
+                }
+            }
+        }
+        fs::write(&espm_json_path, serde_json::to_string_pretty(&espm_json)?)?;
+        Logger::success("Package removed successfully.");
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Handle HTTP or HTTPS proxy if defined in environment
@@ -547,6 +658,7 @@ async fn main() -> Result<()> {
         }
         Commands::Install { dev } => handle_install_command(dev).await?,
         Commands::Init => handle_init_command().await?,
+        Commands::Remove { package } => handle_remove_command(package).await?,
     }
 
     Ok(())
