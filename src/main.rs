@@ -74,7 +74,9 @@ struct ImportMap {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct EspmJson {
+    #[serde(skip_serializing_if = "Option::is_none")]
     import_map: Option<ImportMap>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     import_map_dev: Option<ImportMap>,
 }
 
@@ -198,7 +200,6 @@ impl Specifier {
     }
 }
 
-// Convert JSR package name to NPM package name
 fn jsr_package_to_npm_package(scope: &str, name: &str) -> String {
     format!(
         "@jsr/{}__{}",
@@ -213,6 +214,24 @@ async fn create_directory_if_not_exists(dir: &str) -> Result<()> {
         fs::create_dir_all(path).with_context(|| format!("Failed to create directory: {}", dir))?;
     }
     Ok(())
+}
+
+async fn get_espm_json_path() -> Result<std::path::PathBuf> {
+    let mut current_dir = env::current_dir().context("Failed to get current directory")?;
+    let current_path = current_dir.join("espm.json");
+    if current_path.exists() {
+        return Ok(current_path);
+    }
+
+    while let Some(parent) = current_dir.parent() {
+        let path = parent.join("espm.json");
+        if path.exists() {
+            return Ok(path);
+        }
+        current_dir = parent.to_path_buf();
+    }
+
+    Err(anyhow::anyhow!("espm.json not found in any parent directory"))
 }
 
 async fn download_tarball(tarball_url: &str, scope: &str, name: &str) -> Result<()> {
@@ -367,6 +386,54 @@ async fn handle_add_command(specifier: String, is_dev: bool) -> Result<()> {
         .await
         .with_context(|| format!("Failed to download package: {}", specifier.source))?;
 
+    // Load espm.json (or create if missing)
+    let espm_json_path = match get_espm_json_path().await {
+        Ok(path) => path,
+        Err(_) => {
+            // Create a new espm.json if not found with any key
+            let new = serde_json::json!({});
+            let path = std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                .join("espm.json");
+            fs::write(&path, serde_json::to_string_pretty(&new)?)
+                .with_context(|| format!("Failed to create espm.json at {}", path.display()))?;
+            path
+        }
+    };
+
+    let content = fs::read_to_string(&espm_json_path)
+            .with_context(|| format!("Failed to read espm.json from {}", espm_json_path.display()))?;
+    let mut espm_json: EspmJson = serde_json::from_str(&content)?;
+
+    // Determine which import_map to update
+    let import_map = if is_dev {
+        espm_json.import_map_dev.get_or_insert(ImportMap {
+            imports: std::collections::HashMap::new(),
+            scopes: None,
+        })
+    } else {
+        espm_json.import_map.get_or_insert(ImportMap {
+            imports: std::collections::HashMap::new(),
+            scopes: None,
+        })
+    };
+
+    // Add or update the dependency in the import_map
+    let dep_name = if let Some(scope) = &specifier.scope {
+        format!("@{}/{}", scope, specifier.name.as_deref().unwrap_or(""))
+    } else {
+        specifier.name.as_deref().unwrap_or("").to_string()
+    };
+    import_map
+        .imports
+        .insert(dep_name, specifier.source.clone());
+
+    fs::write(
+        &espm_json_path,
+        serde_json::to_string_pretty(&espm_json)?,
+    )
+    .with_context(|| format!("Failed to write espm.json at {}", espm_json_path.display()))?;
+
     Ok(())
 }
 
@@ -376,80 +443,58 @@ async fn handle_install_command(dev: bool) -> Result<()> {
         if dev { "development" } else { "production" }
     ));
 
-    // search for espm.json in the current directory and parent directories
-    let mut current_dir = env::current_dir().context("Failed to get current directory")?;
-    let current_path = current_dir.join("espm.json");
-    let mut espm_json_path: Option<std::path::PathBuf> = None;
-    if current_path.exists() {
-        espm_json_path = Some(current_path);
+    let espm_json_path = get_espm_json_path().await?;
+    // Read and parse espm.json
+    let content = fs::read_to_string(&espm_json_path)
+        .with_context(|| format!("Failed to read espm.json from {}", espm_json_path.display()))?;
+    let espm_json: EspmJson = serde_json::from_str(&content)
+        .with_context(|| format!("Failed to parse espm.json from {}", espm_json_path.display()))?;
+
+    // Process dependencies based on dev flag
+    if dev {
+        if espm_json.import_map_dev.is_none() {
+            Logger::warn(
+                "No development dependencies found in espm.json. Skipping installation.",
+            );
+            return Ok(());
+        }
+        Logger::info("Installing development dependencies...");
+
+        for value in espm_json.import_map_dev.as_ref().unwrap().imports.values() {
+            let specifier = Specifier::from_string(value)?;
+            download_package(&specifier, true).await?;
+        }
+        if espm_json.import_map.is_none() {
+            return Ok(());
+        }
+        for value in espm_json.import_map.as_ref().unwrap().imports.values() {
+            let specifier = Specifier::from_string(value)?;
+            download_package(&specifier, false).await?;
+        }
+        return Ok(());
     } else {
-        while let Some(parent) = current_dir.parent() {
-            let path = parent.join("espm.json");
-            if path.exists() {
-                espm_json_path = Some(path);
-                break;
-            }
-            current_dir = parent.to_path_buf();
-            println!("Searching for espm.json in: {}", current_dir.display());
-        }
-    }
-
-    // ---
-    if let Some(ref path) = espm_json_path {
-        // Read and parse espm.json
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read espm.json from {}", path.display()))?;
-        let espm_json: EspmJson = serde_json::from_str(&content)
-            .with_context(|| format!("Failed to parse espm.json from {}", path.display()))?;
-
-        // Process dependencies based on dev flag
-        if dev {
-            if espm_json.import_map_dev.is_none() {
-                Logger::warn(
-                    "No development dependencies found in espm.json. Skipping installation.",
-                );
-                return Ok(());
-            }
-            Logger::info("Installing development dependencies...");
-
-            for (key, value) in espm_json.import_map_dev.as_ref().unwrap().imports.iter() {
-                let specifier = Specifier::from_string(value)?;
-                download_package(&specifier, true).await?;
-            }
-            if espm_json.import_map.is_none() {
-                return Ok(());
-            }
-            for (key, value) in espm_json.import_map.as_ref().unwrap().imports.iter() {
-                let specifier = Specifier::from_string(value)?;
-                download_package(&specifier, false).await?;
-            }
-            return Ok(());
-        } else {
-            if espm_json.import_map.is_none() {
-                Logger::warn(
-                    "No production dependencies found in espm.json. Skipping installation.",
-                );
-                return Ok(());
-            }
-
-            for (key, value) in espm_json.import_map.as_ref().unwrap().imports.iter() {
-                let specifier = Specifier::from_string(value)?;
-                download_package(&specifier, false).await?;
-            }
+        if espm_json.import_map.is_none() {
+            Logger::warn(
+                "No production dependencies found in espm.json. Skipping installation.",
+            );
             return Ok(());
         }
-    }
 
-    Ok(())
+        for value in espm_json.import_map.as_ref().unwrap().imports.values() {
+            let specifier = Specifier::from_string(value)?;
+            download_package(&specifier, false).await?;
+        }
+        return Ok(());
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Handle HTTP proxy if defined in environment
-    if let Ok(proxy) = env::var("HTTP_PROXY") {
-        Logger::debug(&format!("Using HTTP_PROXY: {}", proxy));
-        env::set_var("HTTPS_PROXY", &proxy); // reqwest uses HTTPS_PROXY for https requests
-        env::set_var("ALL_PROXY", &proxy); // Some tools might use this
+    // Handle HTTP or HTTPS proxy if defined in environment
+    if let Ok(proxy) = env::var("HTTP_PROXY").or_else(|_| env::var("HTTPS_PROXY")) {
+        env::set_var("HTTP_PROXY", &proxy);
+        env::set_var("HTTPS_PROXY", &proxy);
+        env::set_var("ALL_PROXY", &proxy);
     }
 
     let cli = Cli::parse();
