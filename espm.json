@@ -1,0 +1,7 @@
+{
+    "import_map": {
+        "imports": {
+            "@am/neuralnetwork": "jsr:@am/neuralnetwork@1.0.0"
+        }
+    }
+}

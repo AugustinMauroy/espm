@@ -35,11 +35,47 @@ impl Logger {
     }
 }
 
+/// espm - ECMAScript Package Manager
+#[derive(Parser, Debug)]
+#[clap(author, version, about, long_about = None)]
+struct Cli {
+    #[clap(subcommand)]
+    command: Commands,
+}
+
+#[derive(Parser, Debug)]
+enum Commands {
+    // Add a package dependency
+    #[clap(name = "add", about = "Add a package dependency")]
+    Add {
+        // The package source (e.g., jsr:@scope/pkg@version, npm:pkg@version, file:../path, http(s)://url/pkg.tgz)
+        #[clap(value_parser, required = true)]
+        specifier: String,
+
+        /// Add as a development dependency
+        #[clap(short, long, default_value = "false")]
+        dev: bool,
+    },
+    // install prod dependencies listed in espm.json if dev is false, or all dependencies if dev is true
+    #[clap(name = "install", about = "Install dependencies")]
+    Install {
+        // install all dependencies
+        #[clap(short, long, default_value = "false")]
+        dev: bool,
+    },
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 struct ImportMap {
     imports: std::collections::HashMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     scopes: Option<std::collections::HashMap<String, std::collections::HashMap<String, String>>>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct EspmJson {
+    import_map: Option<ImportMap>,
+    import_map_dev: Option<ImportMap>,
 }
 
 #[derive(Debug)]
@@ -205,13 +241,11 @@ async fn download_tarball(tarball_url: &str, scope: &str, name: &str) -> Result<
     };
     create_directory_if_not_exists(&target_dir).await?;
 
-    println!(
-        "Unpacking tarball for {}/{} into {}",
-        scope, name, target_dir
-    );
-
     // Extract the tarball into the target directory, stripping the first component (usually "package/")
-    for entry in archive.entries().with_context(|| format!("Failed to read entries from tarball {}", tarball_url))? {
+    for entry in archive
+        .entries()
+        .with_context(|| format!("Failed to read entries from tarball {}", tarball_url))?
+    {
         let mut entry = entry?;
         let path = entry.path()?;
         let mut components = path.components();
@@ -219,43 +253,61 @@ async fn download_tarball(tarball_url: &str, scope: &str, name: &str) -> Result<
         let stripped_path: std::path::PathBuf = components.as_path().to_path_buf();
         let out_path = Path::new(&target_dir).join(&stripped_path);
         if let Some(parent) = out_path.parent() {
-            fs::create_dir_all(parent).with_context(|| format!("Failed to create directory: {:?}", parent))?;
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create directory: {:?}", parent))?;
         }
-        entry.unpack(&out_path).with_context(|| format!("Failed to unpack entry to {:?}", out_path))?;
+        entry
+            .unpack(&out_path)
+            .with_context(|| format!("Failed to unpack entry to {:?}", out_path))?;
     }
-
 
     Ok(())
 }
 
-/// espm - ECMAScript Package Manager
-#[derive(Parser, Debug)]
-#[clap(author, version, about, long_about = None)]
-struct Cli {
-    #[clap(subcommand)]
-    command: Commands,
+async fn download_jsr_package(scope: &str, name: &str, version: &str) -> Result<()> {
+    let npm_package_name = jsr_package_to_npm_package(scope, name);
+
+    let client = Client::new();
+    let npm_jsr_url = format!("https://npm.jsr.io/{}", npm_package_name);
+
+    let response = client
+        .get(&npm_jsr_url)
+        .send()
+        .await
+        .with_context(|| format!("Failed to fetch package data from {}", npm_jsr_url))?;
+    if !response.status().is_success() {
+        return Err(anyhow::anyhow!(
+            "Failed to fetch package data: {}",
+            response.status()
+        ));
+    }
+
+    let package_data: serde_json::Value = response
+        .json()
+        .await
+        .with_context(|| format!("Failed to parse package data from {}", npm_jsr_url))?;
+    let version_data = package_data
+        .get("versions")
+        .and_then(|v| v.get(version))
+        .ok_or_else(|| anyhow::anyhow!("Version {} not found in package data", version))?;
+    let tarball_url = version_data
+        .get("dist")
+        .and_then(|d| d.get("tarball"))
+        .and_then(|t| t.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Tarball URL not found in version data"))?;
+
+    download_tarball(&tarball_url, scope, name).await?;
+    Ok(())
 }
 
-#[derive(Parser, Debug)]
-enum Commands {
-    // Add a package dependency
-    #[clap(name = "add", about = "Add a package dependency")]
-    Add {
-        // The package source (e.g., jsr:@scope/pkg@version, npm:pkg@version, file:../path, http(s)://url/pkg.tgz)
-        #[clap(value_parser, required = true)]
-        specifier: String,
+async fn download_npm_package(name: &str, version: &str) -> Result<()> {
+    let npm_package_url = format!(
+        "https://registry.npmjs.org/{}/-/{}-{}.tgz",
+        name, name, version
+    );
 
-        /// Add as a development dependency
-        #[clap(short, long, default_value = "false")]
-        dev: bool,
-    },
-    // install prod dependencies listed in espm.json if dev is false, or all dependencies if dev is true
-    #[clap(name = "install", about = "Install dependencies")]
-    Install {
-        // install all dependencies
-        #[clap(short, long, default_value = "false")]
-        dev: bool,
-    },
+    download_tarball(&npm_package_url, "", name).await?;
+    Ok(())
 }
 
 async fn handle_add_command(specifier: String, is_dev: bool) -> Result<()> {
@@ -268,50 +320,7 @@ async fn handle_add_command(specifier: String, is_dev: bool) -> Result<()> {
             let name = specifier.name.as_deref().unwrap_or("unknown");
             let version = specifier.version.as_deref().unwrap_or("latest");
 
-            // Convert JSR package name to NPM package name if needed
-            let npm_package_name = jsr_package_to_npm_package(scope, name);
-            Logger::info(&format!(
-                "Adding package {}@{} as {}",
-                npm_package_name.cyan(),
-                version.bold(),
-                if is_dev {
-                    "development dependency"
-                } else {
-                    "dependency"
-                }
-            ));
-            let npm_jsr_url = format!("https://npm.jsr.io/{}", npm_package_name);
-            Logger::info(&format!(
-                "Fetching package data from: {}",
-                npm_jsr_url.cyan()
-            ));
-
-            let client = Client::new();
-            let response =
-                client.get(&npm_jsr_url).send().await.with_context(|| {
-                    format!("Failed to fetch package data from {}", npm_jsr_url)
-                })?;
-            if !response.status().is_success() {
-                return Err(anyhow::anyhow!(
-                    "Failed to fetch package data: {}",
-                    response.status()
-                ));
-            }
-
-            let package_data: serde_json::Value = response
-                .json()
-                .await
-                .with_context(|| format!("Failed to parse package data from {}", npm_jsr_url))?;
-            let version_data = package_data
-                .get("versions")
-                .and_then(|v| v.get(version))
-                .ok_or_else(|| anyhow::anyhow!("Version {} not found in package data", version))?;
-            let tarball_url = version_data
-                .get("dist")
-                .and_then(|d| d.get("tarball"))
-                .and_then(|t| t.as_str())
-                .ok_or_else(|| anyhow::anyhow!("Tarball URL not found in version data"))?;
-            download_tarball(tarball_url, scope, name).await?;
+            download_jsr_package(scope, name, version).await?;
 
             // todo(@AugustinMauroy): add logic to update espm.json with the new dependency
 
@@ -340,27 +349,7 @@ async fn handle_add_command(specifier: String, is_dev: bool) -> Result<()> {
                 }
             ));
 
-            
-            let npm_package_url = if let Some(scope) = &specifier.scope {
-                format!(
-                    "https://registry.npmjs.org/@{}/{}/-/{}-{}.tgz",
-                    scope.trim_start_matches('@'),
-                    name,
-                    name,
-                    version
-                )
-            } else {
-                format!(
-                    "https://registry.npmjs.org/{}/-/{}-{}.tgz",
-                    name, name, version
-                )
-            };
-            Logger::info(&format!(
-                "Fetching package tarball from: {}",
-                npm_package_url.cyan()
-            ));
-
-            download_tarball(&npm_package_url, "", name).await?;
+            download_npm_package(name, version).await?;
 
             // todo(@AugustinMauroy): add logic to update espm.json with the new dependency
 
@@ -377,6 +366,154 @@ async fn handle_add_command(specifier: String, is_dev: bool) -> Result<()> {
                 "Unsupported package kind: {}",
                 specifier.kind
             ));
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_install_command(dev: bool) -> Result<()> {
+    Logger::info(&format!(
+        "Installing {} dependencies...",
+        if dev { "development" } else { "production" }
+    ));
+
+    // search for espm.json in the current directory and parent directories
+    let mut current_dir = env::current_dir().context("Failed to get current directory")?;
+    let current_path = current_dir.join("espm.json");
+    let mut espm_json_path: Option<std::path::PathBuf> = None;
+    if current_path.exists() {
+        espm_json_path = Some(current_path);
+    } else {
+        while let Some(parent) = current_dir.parent() {
+            let path = parent.join("espm.json");
+            if path.exists() {
+                espm_json_path = Some(path);
+                break;
+            }
+            current_dir = parent.to_path_buf();
+            println!("Searching for espm.json in: {}", current_dir.display());
+        }
+    }
+
+    // ---
+    if let Some(ref path) = espm_json_path {
+        // Read and parse espm.json
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read espm.json from {}", path.display()))?;
+        let espm_json: EspmJson = serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse espm.json from {}", path.display()))?;
+
+        // Process dependencies based on dev flag
+        if dev {
+            if espm_json.import_map_dev.is_none() {
+                Logger::warn(
+                    "No development dependencies found in espm.json. Skipping installation.",
+                );
+                return Ok(());
+            }
+            Logger::info("Installing development dependencies...");
+ 
+            for (key, value) in espm_json.import_map_dev.as_ref().unwrap().imports.iter() {
+                let specifier = Specifier::from_string(value)?;
+                match specifier.kind.as_str() {
+                    "jsr" => {
+                        let scope = specifier.scope.as_deref().unwrap_or("default");
+                        let name = specifier.name.as_deref().unwrap_or("unknown");
+                        let version = specifier.version.as_deref().unwrap_or("latest");
+
+                        download_jsr_package(scope, name, version).await?;
+                    }
+                    "npm" => {
+                        let name = specifier.name.as_deref().unwrap_or("unknown");
+                        let version = specifier.version.as_deref().unwrap_or("latest");
+
+                        download_npm_package(name, version).await?;
+                    }
+                    "file" => {
+                        Logger::info("Adding file:// is not supported yet");
+                    }
+                    "http" | "https" => {
+                        Logger::info("Adding HTTP(S) is not supported yet");
+                    }
+                    _ => {
+                        return Err(anyhow::anyhow!(
+                            "Unsupported package kind: {}",
+                            specifier.kind
+                        ));
+                    }
+                }
+            }
+             for (key, value) in espm_json.import_map.as_ref().unwrap().imports.iter() {
+                let specifier = Specifier::from_string(value)?;
+                match specifier.kind.as_str() {
+                    "jsr" => {
+                        let scope = specifier.scope.as_deref().unwrap_or("default");
+                        let name = specifier.name.as_deref().unwrap_or("unknown");
+                        let version = specifier.version.as_deref().unwrap_or("latest");
+
+                        download_jsr_package(scope, name, version).await?;
+                    }
+                    "npm" => {
+                        let name = specifier.name.as_deref().unwrap_or("unknown");
+                        let version = specifier.version.as_deref().unwrap_or("latest");
+
+                        download_npm_package(name, version).await?;
+                    }
+                    "file" => {
+                        Logger::info("Adding file:// is not supported yet");
+                    }
+                    "http" | "https" => {
+                        Logger::info("Adding HTTP(S) is not supported yet");
+                    }
+                    _ => {
+                        return Err(anyhow::anyhow!(
+                            "Unsupported package kind: {}",
+                            specifier.kind
+                        ));
+                    }
+                }
+            }
+            return Ok(());
+        } else {
+            if espm_json.import_map.is_none() {
+                Logger::warn(
+                    "No production dependencies found in espm.json. Skipping installation.",
+                );
+                return Ok(());
+            }
+
+            for (key, value) in espm_json.import_map.as_ref().unwrap().imports.iter() {
+                let specifier = Specifier::from_string(value)?;
+                match specifier.kind.as_str() {
+                    "jsr" => {
+                        let scope = specifier.scope.as_deref().unwrap_or("default");
+                        let name = specifier.name.as_deref().unwrap_or("unknown");
+                        let version = specifier.version.as_deref().unwrap_or("latest");
+
+                        download_jsr_package(scope, name, version).await?;
+                    }
+                    "npm" => {
+                        let name = specifier.name.as_deref().unwrap_or("unknown");
+                        let version = specifier.version.as_deref().unwrap_or("latest");
+
+                        download_npm_package(name, version).await?;
+                    }
+                    "file" => {
+                        Logger::info("Adding file:// is not supported yet");
+                    }
+                    "http" | "https" => {
+                        Logger::info("Adding HTTP(S) is not supported yet");
+                    }
+                    _ => {
+                        return Err(anyhow::anyhow!(
+                            "Unsupported package kind: {}",
+                            specifier.kind
+                        ));
+                    }
+                }
+            }
+            return Ok(());
         }
     }
 
@@ -407,18 +544,10 @@ async fn main() -> Result<()> {
                 )),
             }
         }
-        Commands::Install { dev } => {
-            Logger::info(&format!("Installing dependencies (dev: {})", dev));
-            // Placeholder for install logic
-            // This would typically read from espm.json and install dependencies accordingly
-            if dev {
-                Logger::info("Installing development dependencies...");
-            } else {
-                Logger::info("Installing production dependencies...");
-            }
-            // Simulate installation process
-            Logger::success("All dependencies installed successfully (simulated).");
-        }
+        Commands::Install { dev } => match handle_install_command(dev).await {
+            Ok(_) => Logger::success("Successfully processed 'install' command"),
+            Err(e) => Logger::error(&format!("Error processing 'install' command: {}", e)),
+        },
     }
 
     Ok(())
