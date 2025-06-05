@@ -75,12 +75,13 @@ enum Commands {
     },
     #[clap(name = "init", about = "Initialize espm.json")]
     Init,
-    #[clap(name = "help", about = "Display help information")]
+    #[clap(name = "publish", about = "Publish a package")]
     Publish {
+        // By default, espm publish packages to the JSR , but you can use the npm registry by setting this flag
         #[clap(long, default_value = "false")]
         npm: bool,
     },
-    # [clap(name = "setup", about = "Use the right version of espm")]
+    #[clap(name = "setup", about = "Use the right version of espm")]
     Setup {
         #[clap(long, default_value = "latest")]
         version: String,
@@ -340,10 +341,24 @@ async fn download_jsr_package(scope: &str, name: &str, version: &str) -> Result<
         .json()
         .await
         .with_context(|| format!("Failed to parse package data from {}", npm_jsr_url))?;
-    let version_data = package_data
-        .get("versions")
-        .and_then(|v| v.get(version))
-        .ok_or_else(|| anyhow::anyhow!("Version {} not found in package data", version))?;
+    let version_data = if version == "latest" {
+        // If "latest", pick the first version in the "versions" object
+        let versions = package_data
+            .get("versions")
+            .and_then(|v| v.as_object())
+            .ok_or_else(|| anyhow::anyhow!("No versions found in package data"))?;
+        let (first_version, data) = versions
+            .iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("No versions available in package data"))?;
+        Logger::info(&format!("Using latest version: {}", first_version));
+        data
+    } else {
+        package_data
+            .get("versions")
+            .and_then(|v| v.get(version))
+            .ok_or_else(|| anyhow::anyhow!("Version {} not found in package data", version))?
+    };
     let tarball_url = version_data
         .get("dist")
         .and_then(|d| d.get("tarball"))
