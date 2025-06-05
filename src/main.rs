@@ -63,6 +63,8 @@ enum Commands {
         #[clap(short, long, default_value = "false")]
         dev: bool,
     },
+    #[clap(name = "init", about = "Initialize espm.json")]
+    Init,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -74,6 +76,8 @@ struct ImportMap {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct EspmJson {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>, // Name of the project, can be inferred from the current directory
     #[serde(skip_serializing_if = "Option::is_none")]
     import_map: Option<ImportMap>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -231,7 +235,9 @@ async fn get_espm_json_path() -> Result<std::path::PathBuf> {
         current_dir = parent.to_path_buf();
     }
 
-    Err(anyhow::anyhow!("espm.json not found in any parent directory"))
+    Err(anyhow::anyhow!(
+        "espm.json not found in any parent directory"
+    ))
 }
 
 async fn download_tarball(tarball_url: &str, scope: &str, name: &str) -> Result<()> {
@@ -336,27 +342,24 @@ async fn download_package(specifier: &Specifier, is_dev: bool) -> Result<()> {
 
     match specifier.kind.as_str() {
         "jsr" => {
+            if (version == "latest" || version.is_empty()) && specifier.scope.is_none() {
+                Logger::warn(&format!(
+                    "Adding JSR package {} without version is not supported. Please specify a version.",
+                    name.cyan()
+                ));
+                return Ok(());
+            }
             download_jsr_package(scope, name, version).await?;
         }
         "npm" => {
             // Gérer le cas "latest" sans version explicite
             if (version == "latest" || version.is_empty()) && specifier.scope.is_none() {
                 Logger::warn(&format!(
-                    "Adding NPM package {} sans version n’est pas encore géré. Veuillez préciser une version.",
+                    "Adding NPM package {} wihout version is not supported. Please specify a version.",
                     name.cyan()
                 ));
                 return Ok(());
             }
-            Logger::info(&format!(
-                "Adding NPM package {}@{} comme {}",
-                name.cyan(),
-                version.bold(),
-                if is_dev {
-                    "dev dependency"
-                } else {
-                    "dependency"
-                }
-            ));
 
             download_npm_package(name, version).await?;
         }
@@ -402,7 +405,7 @@ async fn handle_add_command(specifier: String, is_dev: bool) -> Result<()> {
     };
 
     let content = fs::read_to_string(&espm_json_path)
-            .with_context(|| format!("Failed to read espm.json from {}", espm_json_path.display()))?;
+        .with_context(|| format!("Failed to read espm.json from {}", espm_json_path.display()))?;
     let mut espm_json: EspmJson = serde_json::from_str(&content)?;
 
     // Determine which import_map to update
@@ -428,12 +431,18 @@ async fn handle_add_command(specifier: String, is_dev: bool) -> Result<()> {
         .imports
         .insert(dep_name, specifier.source.clone());
 
-    fs::write(
-        &espm_json_path,
-        serde_json::to_string_pretty(&espm_json)?,
-    )
-    .with_context(|| format!("Failed to write espm.json at {}", espm_json_path.display()))?;
+    fs::write(&espm_json_path, serde_json::to_string_pretty(&espm_json)?)
+        .with_context(|| format!("Failed to write espm.json at {}", espm_json_path.display()))?;
 
+    Logger::success(&format!(
+        "Package {} added successfully to {}.",
+        specifier.source.cyan(),
+        if is_dev {
+            "development dependencies".bold()
+        } else {
+            "dependencies".bold()
+        }
+    ));
     Ok(())
 }
 
@@ -447,15 +456,17 @@ async fn handle_install_command(dev: bool) -> Result<()> {
     // Read and parse espm.json
     let content = fs::read_to_string(&espm_json_path)
         .with_context(|| format!("Failed to read espm.json from {}", espm_json_path.display()))?;
-    let espm_json: EspmJson = serde_json::from_str(&content)
-        .with_context(|| format!("Failed to parse espm.json from {}", espm_json_path.display()))?;
+    let espm_json: EspmJson = serde_json::from_str(&content).with_context(|| {
+        format!(
+            "Failed to parse espm.json from {}",
+            espm_json_path.display()
+        )
+    })?;
 
     // Process dependencies based on dev flag
     if dev {
         if espm_json.import_map_dev.is_none() {
-            Logger::warn(
-                "No development dependencies found in espm.json. Skipping installation.",
-            );
+            Logger::warn("No development dependencies found in espm.json. Skipping installation.");
             return Ok(());
         }
         Logger::info("Installing development dependencies...");
@@ -471,12 +482,9 @@ async fn handle_install_command(dev: bool) -> Result<()> {
             let specifier = Specifier::from_string(value)?;
             download_package(&specifier, false).await?;
         }
-        return Ok(());
     } else {
         if espm_json.import_map.is_none() {
-            Logger::warn(
-                "No production dependencies found in espm.json. Skipping installation.",
-            );
+            Logger::warn("No production dependencies found in espm.json. Skipping installation.");
             return Ok(());
         }
 
@@ -484,8 +492,42 @@ async fn handle_install_command(dev: bool) -> Result<()> {
             let specifier = Specifier::from_string(value)?;
             download_package(&specifier, false).await?;
         }
-        return Ok(());
     }
+
+    Logger::success("Installation completed successfully.");
+    Ok(())
+}
+
+async fn handle_init_command() -> Result<()> {
+    // Create a new espm.json if it doesn't exist
+    let espm_json_path = std::env::current_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .join("espm.json");
+    let cwd = std::env::current_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+    if !espm_json_path.exists() {
+        let new_espm_json = EspmJson {
+            name: Some(cwd.file_name().unwrap_or_default().to_string_lossy().to_string()),
+            import_map: None,
+            import_map_dev: None 
+        };
+        fs::write(
+            &espm_json_path,
+            serde_json::to_string_pretty(&new_espm_json)?,
+        )?;
+        Logger::success(&format!(
+            "Created new espm.json at {}",
+            espm_json_path.display()
+        ));
+    } else {
+        Logger::warn(&format!(
+            "espm.json already exists at {}. Skipping initialization.",
+            espm_json_path.display()
+        ));
+    }
+
+    Ok(())
 }
 
 #[tokio::main]
@@ -501,21 +543,10 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Add { specifier, dev } => {
-            match handle_add_command(specifier.clone(), dev).await {
-                Ok(_) => Logger::success(&format!(
-                    "Successfully processed 'add' command for '{}'",
-                    specifier
-                )),
-                Err(e) => Logger::error(&format!(
-                    "Error processing 'add' command for '{}': {}",
-                    specifier, e
-                )),
-            }
+            handle_add_command(specifier.clone(), dev).await?;
         }
-        Commands::Install { dev } => match handle_install_command(dev).await {
-            Ok(_) => Logger::success("Successfully processed 'install' command"),
-            Err(e) => Logger::error(&format!("Error processing 'install' command: {}", e)),
-        },
+        Commands::Install { dev } => handle_install_command(dev).await?,
+        Commands::Init => handle_init_command().await?,
     }
 
     Ok(())
