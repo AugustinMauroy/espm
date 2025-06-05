@@ -10,6 +10,9 @@ use std::io::Cursor;
 use std::path::Path;
 use tar::Archive;
 
+mod jsr_npm;
+use jsr_npm::JsrNpmRegistryResponse;
+
 struct Logger;
 
 #[allow(dead_code)]
@@ -105,6 +108,7 @@ struct EspmJson {
     #[serde(skip_serializing_if = "is_import_map_empty")]
     import_map_dev: Option<ImportMap>,
 }
+
 
 // Helper function to skip serializing ImportMap if it's None or its imports are empty
 fn is_import_map_empty(map: &Option<ImportMap>) -> bool {
@@ -324,6 +328,7 @@ async fn download_jsr_package(scope: &str, name: &str, version: &str) -> Result<
 
     let client = Client::new();
     let npm_jsr_url = format!("https://npm.jsr.io/{}", npm_package_name);
+    // https://npm.jsr.io/@jsr/am__neuralnetwork
 
     let response = client
         .get(&npm_jsr_url)
@@ -337,16 +342,13 @@ async fn download_jsr_package(scope: &str, name: &str, version: &str) -> Result<
         ));
     }
 
-    let package_data: serde_json::Value = response
+    let package_data: JsrNpmRegistryResponse = response
         .json()
         .await
         .with_context(|| format!("Failed to parse package data from {}", npm_jsr_url))?;
     let version_data = if version == "latest" {
         // If "latest", pick the first version in the "versions" object
-        let versions = package_data
-            .get("versions")
-            .and_then(|v| v.as_object())
-            .ok_or_else(|| anyhow::anyhow!("No versions found in package data"))?;
+        let versions = &package_data.versions;
         let (first_version, data) = versions
             .iter()
             .next()
@@ -355,15 +357,11 @@ async fn download_jsr_package(scope: &str, name: &str, version: &str) -> Result<
         data
     } else {
         package_data
-            .get("versions")
-            .and_then(|v| v.get(version))
+            .versions
+            .get(version)
             .ok_or_else(|| anyhow::anyhow!("Version {} not found in package data", version))?
     };
-    let tarball_url = version_data
-        .get("dist")
-        .and_then(|d| d.get("tarball"))
-        .and_then(|t| t.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Tarball URL not found in version data"))?;
+    let tarball_url = &version_data.dist.tarball;
 
     download_tarball(&tarball_url, scope, name).await?;
     Ok(())
