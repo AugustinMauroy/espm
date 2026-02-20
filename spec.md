@@ -68,6 +68,7 @@
 `espm setup <cli_version>`
   - `<cli_version>`: The desired version of the `espm` CLI (e.g., `0.1.0`, `latest`).
   - Action: Configures the project to use a specific version of the `espm` CLI. This might involve updating an `espm_version` field in `espm.json` or setting up a local shim/wrapper for the `espm` command.
+  - Blocked: We need to define the publish pipeline of the CLI tool.
 
 ## Managing Dependencies
 

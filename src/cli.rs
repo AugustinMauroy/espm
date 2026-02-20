@@ -16,6 +16,10 @@ pub enum Commands {
 
         #[clap(short, long, default_value = "false")]
         dev: bool,
+
+        /// Require packages to be ESM
+        #[clap(long, default_value = "false")]
+        require_esm: bool,
     },
     #[clap(name = "remove", about = "Remove a dependency")]
     Remove { package: String },
@@ -26,6 +30,10 @@ pub enum Commands {
 
         #[clap(long, default_value = "false")]
         force: bool,
+
+        /// Require packages to be ESM
+        #[clap(long, default_value = "false")]
+        require_esm: bool,
     },
     #[clap(name = "update", about = "Update a package dependency")]
     Update {
@@ -54,7 +62,7 @@ mod tests {
     fn parse_install_with_force() {
         let cli = Cli::try_parse_from(["espm", "install", "--dev", "--force"]).unwrap();
         match cli.command {
-            Commands::Install { dev, force } => {
+            Commands::Install { dev, force, .. } => {
                 assert!(dev);
                 assert!(force);
             }
@@ -66,7 +74,7 @@ mod tests {
     fn parse_add_command() {
         let cli = Cli::try_parse_from(["espm", "add", "npm:lodash@4.17.21", "--dev"]).unwrap();
         match cli.command {
-            Commands::Add { specifier, dev } => {
+            Commands::Add { specifier, dev, .. } => {
                 assert_eq!(specifier, "npm:lodash@4.17.21");
                 assert!(dev);
             }
