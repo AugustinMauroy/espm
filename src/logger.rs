@@ -26,15 +26,5 @@ impl Logger {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::Logger;
-
-    #[test]
-    fn logger_methods_are_callable() {
-        Logger::info("info");
-        Logger::warn("warn");
-        Logger::error("error");
-        Logger::debug("debug");
-        Logger::success("success");
-    }
-}
+#[path = "logger.test.rs"]
+mod tests;
