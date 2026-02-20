@@ -46,6 +46,10 @@ pub enum Commands {
     Publish {
         #[clap(long, default_value = "false")]
         npm: bool,
+
+        /// Prepare the publish payload without sending it
+        #[clap(short = 'n', long, default_value = "false")]
+        dry_run: bool,
     },
     #[clap(name = "setup", about = "Use the right version of espm")]
     Setup {

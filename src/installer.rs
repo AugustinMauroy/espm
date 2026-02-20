@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use flate2::read::GzDecoder;
 use colored::Colorize;
+use flate2::read::GzDecoder;
 use reqwest::Client;
 use semver::{Version, VersionReq};
 use serde::de::DeserializeOwned;
@@ -17,6 +17,7 @@ use crate::logger::Logger;
 use crate::models::{
     DependencyRequest, EspmJson, EspmLock, ImportMap, InstallOptions, LockPackage, ResolvedPackage,
 };
+use crate::publisher;
 use crate::specifier::{
     jsr_package_to_npm_package, npm_tarball_url, parse_npm_dependency_name,
     requested_specifier_from_parts, Specifier,
@@ -223,7 +224,9 @@ pub fn parse_package_name_field(name: &str) -> Result<(Option<String>, String)> 
         .ok_or_else(|| anyhow::anyhow!("Invalid package name '{}' in package.json", name))
 }
 
-pub fn read_package_manifest_from_dir(path: &Path) -> Result<(Option<String>, String, Option<String>)> {
+pub fn read_package_manifest_from_dir(
+    path: &Path,
+) -> Result<(Option<String>, String, Option<String>)> {
     let package_json_path = path.join("package.json");
     let content = fs::read_to_string(&package_json_path)
         .with_context(|| format!("Failed to read {}", package_json_path.display()))?;
@@ -381,7 +384,11 @@ pub fn should_install_locked_package(options: InstallOptions, package: &LockPack
     options.include_dev || !package.dev
 }
 
-pub async fn install_from_lockfile(lock: &EspmLock, options: InstallOptions, require_esm: bool) -> Result<usize> {
+pub async fn install_from_lockfile(
+    lock: &EspmLock,
+    options: InstallOptions,
+    require_esm: bool,
+) -> Result<usize> {
     let mut installed_count = 0usize;
 
     for package in &lock.packages {
@@ -403,14 +410,24 @@ pub async fn install_from_lockfile(lock: &EspmLock, options: InstallOptions, req
 
         match kind.as_str() {
             "npm" | "jsr" => {
-                download_tarball(&package.tarball, scope.as_deref().unwrap_or(""), &name, require_esm)
-                    .await
-                    .with_context(|| format!("Failed to install {} from lockfile", package.id))?;
+                download_tarball(
+                    &package.tarball,
+                    scope.as_deref().unwrap_or(""),
+                    &name,
+                    require_esm,
+                )
+                .await
+                .with_context(|| format!("Failed to install {} from lockfile", package.id))?;
             }
             "file" => {
                 let source_path = Path::new(&package.tarball);
                 if source_path.is_dir() {
-                    install_directory_to_node_modules(source_path, scope.as_deref(), &name, require_esm)?;
+                    install_directory_to_node_modules(
+                        source_path,
+                        scope.as_deref(),
+                        &name,
+                        require_esm,
+                    )?;
                 } else {
                     let bytes = fs::read(source_path).with_context(|| {
                         format!(
@@ -454,7 +471,10 @@ pub async fn install_from_lockfile(lock: &EspmLock, options: InstallOptions, req
     Ok(installed_count)
 }
 
-pub async fn fetch_npm_package_data(scope: Option<&str>, name: &str) -> Result<NPMRegistryResponse> {
+pub async fn fetch_npm_package_data(
+    scope: Option<&str>,
+    name: &str,
+) -> Result<NPMRegistryResponse> {
     let package_name = npm_package_display(scope, name);
     let url = format!("https://registry.npmjs.org/{}", package_name);
     fetch_json_with_retry::<NPMRegistryResponse>(&url, 3)
@@ -520,7 +540,12 @@ pub fn should_skip_reinstall(scope: Option<&str>, name: &str, expected_version: 
     }
 }
 
-pub async fn download_tarball(tarball_url: &str, scope: &str, name: &str, require_esm: bool) -> Result<()> {
+pub async fn download_tarball(
+    tarball_url: &str,
+    scope: &str,
+    name: &str,
+    require_esm: bool,
+) -> Result<()> {
     let content = fetch_bytes_with_retry(tarball_url, 3)
         .await
         .with_context(|| format!("Failed to download tarball from {}", tarball_url))?;
@@ -537,7 +562,10 @@ pub fn extract_tarball_to_node_modules(
 ) -> Result<()> {
     let is_esm = inspect_tgz_bytes_for_esm(content, source_label)?;
     if !is_esm {
-        let msg = format!("Package {} (from {}) does not appear to be ESM", name, source_label);
+        let msg = format!(
+            "Package {} (from {}) does not appear to be ESM",
+            name, source_label
+        );
         if require_esm {
             return Err(anyhow::anyhow!(msg));
         } else {
@@ -616,10 +644,19 @@ pub fn copy_directory_recursive(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn install_directory_to_node_modules(src: &Path, scope: Option<&str>, name: &str, require_esm: bool) -> Result<()> {
+pub fn install_directory_to_node_modules(
+    src: &Path,
+    scope: Option<&str>,
+    name: &str,
+    require_esm: bool,
+) -> Result<()> {
     let is_esm = inspect_dir_for_esm(src)?;
     if !is_esm {
-        let msg = format!("Local package {} at {} does not appear to be ESM", name, src.display());
+        let msg = format!(
+            "Local package {} at {} does not appear to be ESM",
+            name,
+            src.display()
+        );
         if require_esm {
             return Err(anyhow::anyhow!(msg));
         } else {
@@ -639,7 +676,12 @@ pub fn install_directory_to_node_modules(src: &Path, scope: Option<&str>, name: 
     copy_directory_recursive(src, &target_dir)
 }
 
-pub async fn download_jsr_package(scope: &str, name: &str, version: &str, require_esm: bool) -> Result<()> {
+pub async fn download_jsr_package(
+    scope: &str,
+    name: &str,
+    version: &str,
+    require_esm: bool,
+) -> Result<()> {
     let npm_package_name = jsr_package_to_npm_package(scope, name);
 
     let client = Client::new();
@@ -681,7 +723,12 @@ pub async fn download_jsr_package(scope: &str, name: &str, version: &str, requir
     Ok(())
 }
 
-pub async fn download_npm_package(scope: Option<&str>, name: &str, version: &str, require_esm: bool) -> Result<()> {
+pub async fn download_npm_package(
+    scope: Option<&str>,
+    name: &str,
+    version: &str,
+    require_esm: bool,
+) -> Result<()> {
     let npm_package_url = npm_tarball_url(scope, name, version);
     let install_scope = scope.unwrap_or("");
 
@@ -842,7 +889,12 @@ pub async fn resolve_jsr_package(
     })
 }
 
-pub async fn download_package(specifier: &Specifier, _is_dev: bool, base_dir: &Path, require_esm: bool) -> Result<()> {
+pub async fn download_package(
+    specifier: &Specifier,
+    _is_dev: bool,
+    base_dir: &Path,
+    require_esm: bool,
+) -> Result<()> {
     let (identity_scope, identity_name, _) =
         package_identity_from_specifier(specifier, base_dir).await?;
 
@@ -878,7 +930,12 @@ pub async fn download_package(specifier: &Specifier, _is_dev: bool, base_dir: &P
             })?;
             let resolved_path = resolve_file_source_path(base_dir, path);
             if resolved_path.is_dir() {
-                install_directory_to_node_modules(&resolved_path, identity_scope.as_deref(), name, require_esm)?;
+                install_directory_to_node_modules(
+                    &resolved_path,
+                    identity_scope.as_deref(),
+                    name,
+                    require_esm,
+                )?;
             } else {
                 let bytes = fs::read(&resolved_path).with_context(|| {
                     format!(
@@ -983,12 +1040,14 @@ pub async fn handle_add_command(specifier: String, is_dev: bool, require_esm: bo
         })?;
     }
 
-    handle_install_command(true, false, require_esm).await.with_context(|| {
-        format!(
-            "Failed to refresh installation and lockfile after adding {}",
-            specifier.source
-        )
-    })?;
+    handle_install_command(true, false, require_esm)
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to refresh installation and lockfile after adding {}",
+                specifier.source
+            )
+        })?;
 
     Logger::success(&format!(
         "Package {} added successfully to {}.",
@@ -1002,7 +1061,10 @@ pub async fn handle_add_command(specifier: String, is_dev: bool, require_esm: bo
     Ok(())
 }
 
-pub fn requests_from_import_map(import_map: &ImportMap, dev: bool) -> Result<Vec<DependencyRequest>> {
+pub fn requests_from_import_map(
+    import_map: &ImportMap,
+    dev: bool,
+) -> Result<Vec<DependencyRequest>> {
     let mut requests = Vec::new();
 
     for (dep_key, value) in &import_map.imports {
@@ -1151,7 +1213,11 @@ pub async fn resolve_dependency_request(
     }
 }
 
-pub async fn install_resolved_package(pkg: &ResolvedPackage, options: InstallOptions, require_esm: bool) -> Result<bool> {
+pub async fn install_resolved_package(
+    pkg: &ResolvedPackage,
+    options: InstallOptions,
+    require_esm: bool,
+) -> Result<bool> {
     if !options.force && should_skip_reinstall(pkg.scope.as_deref(), &pkg.name, &pkg.version) {
         Logger::info(&format!(
             "Skipping {}@{} (already installed)",
@@ -1170,7 +1236,12 @@ pub async fn install_resolved_package(pkg: &ResolvedPackage, options: InstallOpt
         "file" => {
             let source_path = Path::new(&pkg.tarball);
             if source_path.is_dir() {
-                install_directory_to_node_modules(source_path, pkg.scope.as_deref(), &pkg.name, require_esm)?;
+                install_directory_to_node_modules(
+                    source_path,
+                    pkg.scope.as_deref(),
+                    &pkg.name,
+                    require_esm,
+                )?;
             } else {
                 let bytes = fs::read(source_path).with_context(|| {
                     format!(
@@ -1178,7 +1249,13 @@ pub async fn install_resolved_package(pkg: &ResolvedPackage, options: InstallOpt
                         source_path.display()
                     )
                 })?;
-                extract_tarball_to_node_modules(&bytes, scope, &pkg.name, &pkg.tarball, require_esm)?;
+                extract_tarball_to_node_modules(
+                    &bytes,
+                    scope,
+                    &pkg.name,
+                    &pkg.tarball,
+                    require_esm,
+                )?;
             }
         }
         "http" | "https" => {
@@ -1272,81 +1349,186 @@ pub async fn handle_install_command(dev: bool, force: bool, require_esm: bool) -
 
     let base_dir = espm_json_path.parent().unwrap_or_else(|| Path::new("."));
 
-    if let Some(installed_count) = try_install_from_lockfile(base_dir, options, require_esm).await? {
+    // Transactional install: move existing `node_modules` out of the way before
+    // attempting installation. If installation fails, restore the previous
+    // `node_modules`. On success, remove the backup.
+    fn node_modules_path() -> PathBuf {
+        Path::new("./node_modules").to_path_buf()
+    }
+
+    fn backup_node_modules() -> Result<Option<PathBuf>> {
+        let nm = node_modules_path();
+        if nm.exists() {
+            let mut backup = Path::new("./node_modules.backup").to_path_buf();
+            let mut i = 0;
+            while backup.exists() {
+                i += 1;
+                backup = Path::new(&format!("./node_modules.backup.{}", i)).to_path_buf();
+            }
+            fs::rename(&nm, &backup).with_context(|| {
+                format!(
+                    "Failed to move existing node_modules to {}",
+                    backup.display()
+                )
+            })?;
+            return Ok(Some(backup));
+        }
+        Ok(None)
+    }
+
+    fn restore_node_modules(backup: Option<PathBuf>) -> Result<()> {
+        if let Some(backup) = backup {
+            let nm = node_modules_path();
+            if nm.exists() {
+                fs::remove_dir_all(&nm).with_context(|| {
+                    format!(
+                        "Failed to remove incomplete node_modules at {}",
+                        nm.display()
+                    )
+                })?;
+            }
+            fs::rename(&backup, &nm).with_context(|| {
+                format!("Failed to restore node_modules from {}", backup.display())
+            })?;
+        }
+        Ok(())
+    }
+
+    fn remove_node_modules_backup(backup: Option<PathBuf>) -> Result<()> {
+        if let Some(backup) = backup {
+            if backup.exists() {
+                fs::remove_dir_all(&backup).with_context(|| {
+                    format!(
+                        "Failed to remove node_modules backup at {}",
+                        backup.display()
+                    )
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    let backup = match backup_node_modules() {
+        Ok(b) => b,
+        Err(e) => {
+            Logger::warn(&format!("Failed to backup existing node_modules: {}", e));
+            None
+        }
+    };
+
+    // Run the original installation logic and decide whether to restore on error
+    let install_result: Result<()> = (async {
+        if let Some(installed_count) =
+            try_install_from_lockfile(base_dir, options, require_esm).await?
+        {
+            Logger::info(&format!(
+                "Installed {} package(s){} from lockfile.",
+                installed_count,
+                options.summary_suffix()
+            ));
+            Logger::success("Installation completed successfully.");
+            return Ok(());
+        }
+
+        let mut queue = build_install_queue(&espm_json, options)?;
+
+        if queue.is_empty() {
+            Logger::warn("No installable dependencies found in espm.json. Skipping installation.");
+            return Ok(());
+        }
+
+        let mut installed_versions: HashMap<String, String> = HashMap::new();
+        let mut lock_entries: BTreeMap<String, LockPackage> = BTreeMap::new();
+        let mut installed_count = 0usize;
+
+        while let Some(request) = queue.pop_front() {
+            let resolved = resolve_dependency_request(&request, base_dir)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to resolve {} package {}",
+                        request.kind, request.name
+                    )
+                })?;
+
+            if let Some(existing_version) = installed_versions.get(&resolved.key) {
+                if existing_version != &resolved.version {
+                    Logger::warn(&format!(
+                        "Version conflict for {}: keeping {}, skipping {}",
+                        resolved.key, existing_version, resolved.version
+                    ));
+                }
+                continue;
+            }
+
+            let installed_now = install_resolved_package(&resolved, options, require_esm).await?;
+            if installed_now {
+                installed_count += 1;
+            }
+            installed_versions.insert(resolved.key.clone(), resolved.version.clone());
+
+            lock_entries.insert(
+                resolved.key.clone(),
+                LockPackage {
+                    id: resolved.key.clone(),
+                    source: resolved.source.clone(),
+                    resolved_version: resolved.version.clone(),
+                    tarball: resolved.tarball.clone(),
+                    requested: resolved.requested.clone(),
+                    dev: resolved.dev,
+                },
+            );
+
+            for transitive in dependency_requests_from_package(&resolved) {
+                queue.push_back(transitive);
+            }
+        }
+
+        let lockfile = finalize_lockfile(lock_entries.into_values().collect());
+        write_lockfile(&lockfile, base_dir)?;
+
         Logger::info(&format!(
-            "Installed {} package(s){} from lockfile.",
+            "Installed {} package(s){}.",
             installed_count,
             options.summary_suffix()
         ));
+
         Logger::success("Installation completed successfully.");
-        return Ok(());
-    }
+        Ok(())
+    })
+    .await;
 
-    let mut queue = build_install_queue(&espm_json, options)?;
-
-    if queue.is_empty() {
-        Logger::warn("No installable dependencies found in espm.json. Skipping installation.");
-        return Ok(());
-    }
-
-    let mut installed_versions: HashMap<String, String> = HashMap::new();
-    let mut lock_entries: BTreeMap<String, LockPackage> = BTreeMap::new();
-    let mut installed_count = 0usize;
-
-    while let Some(request) = queue.pop_front() {
-        let resolved = resolve_dependency_request(&request, base_dir)
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to resolve {} package {}",
-                    request.kind, request.name
-                )
-            })?;
-
-        if let Some(existing_version) = installed_versions.get(&resolved.key) {
-            if existing_version != &resolved.version {
+    match install_result {
+        Ok(_) => {
+            if let Err(e) = remove_node_modules_backup(backup) {
+                Logger::warn(&format!("Failed to remove node_modules backup: {}", e));
+            }
+            Ok(())
+        }
+        Err(e) => {
+            Logger::error(&format!("Installation failed: {}", e));
+            if let Err(rest_err) = restore_node_modules(backup) {
                 Logger::warn(&format!(
-                    "Version conflict for {}: keeping {}, skipping {}",
-                    resolved.key, existing_version, resolved.version
+                    "Failed to restore node_modules from backup: {}",
+                    rest_err
                 ));
             }
-            continue;
-        }
-
-        let installed_now = install_resolved_package(&resolved, options, require_esm).await?;
-        if installed_now {
-            installed_count += 1;
-        }
-        installed_versions.insert(resolved.key.clone(), resolved.version.clone());
-
-        lock_entries.insert(
-            resolved.key.clone(),
-            LockPackage {
-                id: resolved.key.clone(),
-                source: resolved.source.clone(),
-                resolved_version: resolved.version.clone(),
-                tarball: resolved.tarball.clone(),
-                requested: resolved.requested.clone(),
-                dev: resolved.dev,
-            },
-        );
-
-        for transitive in dependency_requests_from_package(&resolved) {
-            queue.push_back(transitive);
+            Err(e)
         }
     }
+}
 
-    let lockfile = finalize_lockfile(lock_entries.into_values().collect());
-    write_lockfile(&lockfile, base_dir)?;
+pub async fn handle_publish_command(npm: bool, dry_run: bool) -> Result<()> {
+    let cwd = std::env::current_dir().context("Failed to get current directory")?;
 
     Logger::info(&format!(
-        "Installed {} package(s){}.",
-        installed_count,
-        options.summary_suffix()
+        "Publishing from {} using {} registry{}.",
+        cwd.display(),
+        if npm { "npm" } else { "JSR" },
+        if dry_run { " (dry-run)" } else { "" }
     ));
 
-    Logger::success("Installation completed successfully.");
-    Ok(())
+    publisher::publish_from_dir(&cwd, npm, dry_run).await
 }
 
 pub async fn handle_init_command() -> Result<()> {
@@ -1591,7 +1773,9 @@ pub async fn handle_update_command(package: String) -> Result<()> {
         let new_specifier = Specifier::from_string(&new_source)
             .with_context(|| format!("Failed to parse updated specifier '{}'", new_source))?;
         let base_dir = espm_json_path.parent().unwrap_or_else(|| Path::new("."));
-        let require_esm_env = std::env::var("ESPM_REQUIRE_ESM").map(|v| v == "1" || v.to_lowercase() == "true").unwrap_or(false);
+        let require_esm_env = std::env::var("ESPM_REQUIRE_ESM")
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or(false);
         download_package(&new_specifier, is_dev, base_dir, require_esm_env)
             .await
             .with_context(|| {

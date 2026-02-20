@@ -134,9 +134,9 @@ pub fn parse_npm_dependency_name(input: &str) -> Option<(Option<String>, String)
     if input.starts_with('@') {
         if let Some(stripped) = input.strip_prefix('@') {
             let parts: Vec<&str> = stripped.splitn(2, '/').collect();
-        if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
-            return Some((Some(parts[0].to_string()), parts[1].to_string()));
-        }
+            if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+                return Some((Some(parts[0].to_string()), parts[1].to_string()));
+            }
         }
         return None;
     }

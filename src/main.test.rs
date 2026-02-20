@@ -3,9 +3,9 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use std::io::Write;
 use std::sync::{Arc, OnceLock};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tar::Builder;
 use tempfile::tempdir;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 fn cwd_test_lock() -> &'static Arc<Semaphore> {
     static LOCK: OnceLock<Arc<Semaphore>> = OnceLock::new();
@@ -13,11 +13,7 @@ fn cwd_test_lock() -> &'static Arc<Semaphore> {
 }
 
 async fn acquire_cwd_lock() -> OwnedSemaphorePermit {
-    cwd_test_lock()
-        .clone()
-        .acquire_owned()
-        .await
-        .unwrap()
+    cwd_test_lock().clone().acquire_owned().await.unwrap()
 }
 
 struct CwdGuard {
@@ -244,8 +240,7 @@ fn test_select_latest_compatible_version_fallback_to_max() {
     let versions = vec!["1.0.0", "1.2.0", "1.3.0"]
         .into_iter()
         .map(String::from);
-    let selected =
-        select_latest_compatible_version(versions, Some("not-semver"), None).unwrap();
+    let selected = select_latest_compatible_version(versions, Some("not-semver"), None).unwrap();
     assert_eq!(selected, "1.3.0");
 }
 
@@ -536,8 +531,7 @@ fn test_package_identity_from_file_tarball() {
     let tarball_path = temp.path().join("local-pkg.tgz");
     write_tgz_package(&tarball_path, "local-pkg", "9.9.9").unwrap();
 
-    let spec =
-        Specifier::from_string(&format!("file:{}", tarball_path.to_string_lossy())).unwrap();
+    let spec = Specifier::from_string(&format!("file:{}", tarball_path.to_string_lossy())).unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (scope, name, version) = runtime
         .block_on(package_identity_from_specifier(&spec, temp.path()))

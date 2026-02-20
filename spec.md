@@ -13,11 +13,9 @@
 ## Future goals
 
 - npm cli compatibility (e.g., `package.json`, `package-lock.json`) so if project use npm you can just use espm
-- optimize `add` to refresh only the affected dependency graph instead of reinstalling all dependencies
 
 ## Questions ???
 
-- How to handle workspaces?
 - How to download the CLI tool
 - How to execute a package like `npx`?
 
@@ -137,6 +135,11 @@
     "espm_version": "0.0.0",
 }
 ```
+
+## Missing parts in spec
+
+- How to support other registries like GitHub Packages, private registries, etc.?
+- How to handle workspaces and monorepos? Should `espm` support a workspace feature similar to npm/yarn?
 
 ## Related links
 

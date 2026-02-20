@@ -25,6 +25,9 @@ fn e2e_remove_deletes_config_and_installed_artifacts() {
         .and_then(|value| value.get("imports"))
         .and_then(|value| value.get("remove-me"))
         .is_some();
-    assert!(!has_dep, "dependency still present in espm.json after remove");
+    assert!(
+        !has_dep,
+        "dependency still present in espm.json after remove"
+    );
     assert!(!temp.path().join("node_modules/remove-me").exists());
 }

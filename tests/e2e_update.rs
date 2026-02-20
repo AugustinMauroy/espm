@@ -18,7 +18,10 @@ fn e2e_update_file_dependency_is_intentional_noop() {
     assert_success(&update_output, "espm update file dependency");
     let after = fs::read_to_string(temp.path().join("espm.json")).expect("read espm after");
 
-    assert_eq!(before, after, "file dependency update should keep config unchanged");
+    assert_eq!(
+        before, after,
+        "file dependency update should keep config unchanged"
+    );
 
     let combined = format!(
         "{}\n{}",

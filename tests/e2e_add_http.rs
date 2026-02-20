@@ -50,5 +50,8 @@ fn e2e_add_http_installs_and_writes_lockfile() {
                 && pkg.get("tarball").and_then(|value| value.as_str()) == Some(url.as_str())
         });
     assert!(has_remote, "http package missing from lockfile");
-    assert!(temp.path().join("node_modules/remote-pkg/package.json").exists());
+    assert!(temp
+        .path()
+        .join("node_modules/remote-pkg/package.json")
+        .exists());
 }
