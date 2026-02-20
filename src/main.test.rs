@@ -1,6 +1,6 @@
 use super::*;
-use flate2::write::GzEncoder;
 use flate2::Compression;
+use flate2::write::GzEncoder;
 use std::io::Write;
 use std::sync::{Arc, OnceLock};
 use tar::Builder;
@@ -404,10 +404,11 @@ async fn test_install_from_lockfile_supports_file_directory_package() {
     .unwrap();
 
     assert_eq!(installed, 1);
-    assert!(temp
-        .path()
-        .join("node_modules/local-pkg/package.json")
-        .exists());
+    assert!(
+        temp.path()
+            .join("node_modules/local-pkg/package.json")
+            .exists()
+    );
 }
 
 #[tokio::test]
@@ -445,10 +446,11 @@ async fn test_install_command_writes_file_dependency_into_lockfile() {
         .canonicalize()
         .unwrap();
     assert_eq!(actual_path, expected_path);
-    assert!(temp
-        .path()
-        .join("node_modules/local-pkg/package.json")
-        .exists());
+    assert!(
+        temp.path()
+            .join("node_modules/local-pkg/package.json")
+            .exists()
+    );
 }
 
 #[tokio::test]
@@ -482,10 +484,12 @@ async fn test_remove_command_cleans_file_dependency_artifacts() {
     assert!(!installed_dir.exists());
     let updated_content = fs::read_to_string(temp.path().join("espm.json")).unwrap();
     let updated: EspmJson = serde_json::from_str(&updated_content).unwrap();
-    assert!(updated
-        .import_map
-        .map(|map| map.imports.is_empty())
-        .unwrap_or(true));
+    assert!(
+        updated
+            .import_map
+            .map(|map| map.imports.is_empty())
+            .unwrap_or(true)
+    );
 }
 
 #[tokio::test]
@@ -592,14 +596,16 @@ async fn test_add_command_refreshes_stale_lockfile() {
     let lock_content = fs::read_to_string(temp.path().join("espm-lock.json")).unwrap();
     let lock: EspmLock = serde_json::from_str(&lock_content).unwrap();
     assert_eq!(lock.packages.len(), 2);
-    assert!(lock
-        .packages
-        .iter()
-        .any(|pkg| pkg.id == "file:existing-pkg" && pkg.source == "file:./existing-pkg"));
-    assert!(lock
-        .packages
-        .iter()
-        .any(|pkg| pkg.id == "file:new-pkg" && pkg.source == "file:./new-pkg"));
+    assert!(
+        lock.packages
+            .iter()
+            .any(|pkg| pkg.id == "file:existing-pkg" && pkg.source == "file:./existing-pkg")
+    );
+    assert!(
+        lock.packages
+            .iter()
+            .any(|pkg| pkg.id == "file:new-pkg" && pkg.source == "file:./new-pkg")
+    );
 
     let updated_content = fs::read_to_string(temp.path().join("espm.json")).unwrap();
     let updated: EspmJson = serde_json::from_str(&updated_content).unwrap();

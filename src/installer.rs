@@ -10,7 +10,7 @@ use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use tar::Archive;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 use crate::jsr_npm::{JsrNpmRegistryResponse, NPMRegistryResponse};
 use crate::logger::Logger;
@@ -19,8 +19,8 @@ use crate::models::{
 };
 use crate::publisher;
 use crate::specifier::{
-    jsr_package_to_npm_package, npm_tarball_url, parse_npm_dependency_name,
-    requested_specifier_from_parts, Specifier,
+    Specifier, jsr_package_to_npm_package, npm_tarball_url, parse_npm_dependency_name,
+    requested_specifier_from_parts,
 };
 
 pub async fn get_espm_json_path() -> Result<std::path::PathBuf> {
@@ -85,7 +85,10 @@ pub fn npm_package_display(scope: Option<&str>, name: &str) -> String {
 }
 
 pub async fn fetch_json_with_retry<T: DeserializeOwned>(url: &str, attempts: u8) -> Result<T> {
-    Logger::debug(&format!("fetch_json_with_retry url={} attempts={}", url, attempts));
+    Logger::debug(&format!(
+        "fetch_json_with_retry url={} attempts={}",
+        url, attempts
+    ));
     let client = Client::new();
     let mut last_error: Option<anyhow::Error> = None;
 
@@ -122,7 +125,10 @@ pub async fn fetch_json_with_retry<T: DeserializeOwned>(url: &str, attempts: u8)
 }
 
 pub async fn fetch_bytes_with_retry(url: &str, attempts: u8) -> Result<Vec<u8>> {
-    Logger::debug(&format!("fetch_bytes_with_retry url={} attempts={}", url, attempts));
+    Logger::debug(&format!(
+        "fetch_bytes_with_retry url={} attempts={}",
+        url, attempts
+    ));
     let client = Client::new();
     let mut last_error: Option<anyhow::Error> = None;
 
@@ -162,11 +168,10 @@ pub async fn fetch_bytes_with_retry(url: &str, attempts: u8) -> Result<Vec<u8>> 
 }
 
 pub fn package_value_is_esm(package_json: &serde_json::Value) -> bool {
-    if let Some(t) = package_json.get("type").and_then(|v| v.as_str()) {
-        if t == "module" {
+    if let Some(t) = package_json.get("type").and_then(|v| v.as_str())
+        && t == "module" {
             return true;
         }
-    }
 
     if package_json.get("module").is_some() {
         return true;
@@ -176,11 +181,10 @@ pub fn package_value_is_esm(package_json: &serde_json::Value) -> bool {
         return true;
     }
 
-    if let Some(main) = package_json.get("main").and_then(|v| v.as_str()) {
-        if main.ends_with(".mjs") {
+    if let Some(main) = package_json.get("main").and_then(|v| v.as_str())
+        && main.ends_with(".mjs") {
             return true;
         }
-    }
 
     false
 }
@@ -302,7 +306,10 @@ pub async fn package_identity_from_specifier(
     specifier: &Specifier,
     base_dir: &Path,
 ) -> Result<(Option<String>, String, Option<String>)> {
-    Logger::debug(&format!("package_identity_from_specifier called with {:?}", specifier));
+    Logger::debug(&format!(
+        "package_identity_from_specifier called with {:?}",
+        specifier
+    ));
     match specifier.kind.as_str() {
         "jsr" | "npm" => {
             let name = specifier
@@ -392,7 +399,10 @@ pub async fn install_from_lockfile(
     options: InstallOptions,
     require_esm: bool,
 ) -> Result<usize> {
-    Logger::debug(&format!("install_from_lockfile options={:?} require_esm={}", options, require_esm));
+    Logger::debug(&format!(
+        "install_from_lockfile options={:?} require_esm={}",
+        options, require_esm
+    ));
     let mut installed_count = 0usize;
 
     for package in &lock.packages {
@@ -788,11 +798,10 @@ where
         ));
     }
 
-    if let Some(tag) = latest_tag {
-        if Version::parse(tag).is_ok() {
+    if let Some(tag) = latest_tag
+        && Version::parse(tag).is_ok() {
             return Ok(tag.to_string());
         }
-    }
 
     parsed_versions
         .iter()
@@ -1296,13 +1305,12 @@ pub fn build_install_queue(
         }
     }
 
-    if options.include_dev {
-        if let Some(import_map_dev) = &espm_json.import_map_dev {
+    if options.include_dev
+        && let Some(import_map_dev) = &espm_json.import_map_dev {
             for request in requests_from_import_map(import_map_dev, true)? {
                 queue.push_back(request);
             }
         }
-    }
 
     Ok(queue)
 }
@@ -1399,8 +1407,8 @@ pub async fn handle_install_command(dev: bool, force: bool, require_esm: bool) -
     }
 
     fn remove_node_modules_backup(backup: Option<PathBuf>) -> Result<()> {
-        if let Some(backup) = backup {
-            if backup.exists() {
+        if let Some(backup) = backup
+            && backup.exists() {
                 fs::remove_dir_all(&backup).with_context(|| {
                     format!(
                         "Failed to remove node_modules backup at {}",
@@ -1408,7 +1416,6 @@ pub async fn handle_install_command(dev: bool, force: bool, require_esm: bool) -
                     )
                 })?;
             }
-        }
         Ok(())
     }
 
@@ -1580,11 +1587,10 @@ pub async fn handle_remove_command(package: String) -> Result<()> {
     let (possible_names, original_specifier) = match Specifier::from_string(&package) {
         Ok(spec) => {
             let mut names = Vec::new();
-            if let Some(scope) = &spec.scope {
-                if let Some(name) = &spec.name {
+            if let Some(scope) = &spec.scope
+                && let Some(name) = &spec.name {
                     names.push(format!("@{}/{}", scope, name));
                 }
-            }
             if let Some(name) = &spec.name {
                 names.push(name.clone());
             }
@@ -1639,29 +1645,25 @@ pub async fn handle_remove_command(package: String) -> Result<()> {
         for name in &possible_names {
             let node_modules_path = Path::new("./node_modules");
             let pkg_path = node_modules_path.join(name);
-            if pkg_path.exists() {
-                if let Err(e) = fs::remove_dir_all(&pkg_path) {
+            if pkg_path.exists()
+                && let Err(e) = fs::remove_dir_all(&pkg_path) {
                     Logger::warn(&format!("Failed to remove directory {:?}: {}", pkg_path, e));
                 }
-            }
-            if name.starts_with('@') {
-                if let Some((scope, _)) = name.split_once('/') {
+            if name.starts_with('@')
+                && let Some((scope, _)) = name.split_once('/') {
                     let scope_path = node_modules_path.join(scope);
                     if scope_path.exists()
                         && scope_path
                             .read_dir()
                             .map(|mut d| d.next().is_none())
                             .unwrap_or(false)
-                    {
-                        if let Err(e) = fs::remove_dir_all(&scope_path) {
+                        && let Err(e) = fs::remove_dir_all(&scope_path) {
                             Logger::warn(&format!(
                                 "Failed to remove scope directory {:?}: {}",
                                 scope_path, e
                             ));
                         }
-                    }
                 }
-            }
         }
         fs::write(&espm_json_path, serde_json::to_string_pretty(&espm_json)?)?;
         Logger::success("Package removed successfully.");
@@ -1683,16 +1685,14 @@ pub async fn handle_update_command(package: String) -> Result<()> {
 
     let mut targets: Vec<(bool, String, String)> = Vec::new();
 
-    if let Some(import_map) = &espm_json.import_map {
-        if let Some(spec) = import_map.imports.get(&package) {
+    if let Some(import_map) = &espm_json.import_map
+        && let Some(spec) = import_map.imports.get(&package) {
             targets.push((false, package.clone(), spec.clone()));
         }
-    }
-    if let Some(import_map_dev) = &espm_json.import_map_dev {
-        if let Some(spec) = import_map_dev.imports.get(&package) {
+    if let Some(import_map_dev) = &espm_json.import_map_dev
+        && let Some(spec) = import_map_dev.imports.get(&package) {
             targets.push((true, package.clone(), spec.clone()));
         }
-    }
 
     if targets.is_empty() {
         return Err(anyhow::anyhow!(

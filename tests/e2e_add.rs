@@ -83,8 +83,9 @@ fn e2e_add_file_dependency_refreshes_lockfile() {
         Some("file:./new-pkg")
     );
 
-    assert!(temp
-        .path()
-        .join("node_modules/new-pkg/package.json")
-        .exists());
+    assert!(
+        temp.path()
+            .join("node_modules/new-pkg/package.json")
+            .exists()
+    );
 }

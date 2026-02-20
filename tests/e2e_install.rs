@@ -51,10 +51,11 @@ fn e2e_install_uses_lockfile_for_file_dependency() {
 
     let output = run_espm(temp.path(), &["install"]);
     assert_success(&output, "espm install");
-    assert!(temp
-        .path()
-        .join("node_modules/valid-pkg/package.json")
-        .exists());
+    assert!(
+        temp.path()
+            .join("node_modules/valid-pkg/package.json")
+            .exists()
+    );
 }
 
 // ensure that the lockfile is respected even when the import map has a different URL
@@ -101,10 +102,11 @@ fn e2e_install_uses_lockfile_for_http_dependency() {
     handle.join().expect("join server thread");
 
     assert_success(&output, "espm install http");
-    assert!(temp
-        .path()
-        .join("node_modules/remote-pkg/package.json")
-        .exists());
+    assert!(
+        temp.path()
+            .join("node_modules/remote-pkg/package.json")
+            .exists()
+    );
 }
 
 #[test]
@@ -150,10 +152,11 @@ fn e2e_install_uses_lockfile_for_npm_dependency() {
     handle.join().expect("join server thread");
 
     assert_success(&output, "espm install npm");
-    assert!(temp
-        .path()
-        .join("node_modules/npm-pkg/package.json")
-        .exists());
+    assert!(
+        temp.path()
+            .join("node_modules/npm-pkg/package.json")
+            .exists()
+    );
 }
 
 #[test]
@@ -199,10 +202,11 @@ fn e2e_install_uses_lockfile_for_jsr_scoped_dependency() {
     handle.join().expect("join server thread");
 
     assert_success(&output, "espm install jsr");
-    assert!(temp
-        .path()
-        .join("node_modules/@scope/pkg/package.json")
-        .exists());
+    assert!(
+        temp.path()
+            .join("node_modules/@scope/pkg/package.json")
+            .exists()
+    );
 }
 
 // perform a real network installation against the JSR registry; network failures are tolerated
@@ -229,8 +233,9 @@ fn e2e_install_real_jsr_dependency() {
     }
 
     assert_success(&output, "espm install real jsr package");
-    assert!(temp
-        .path()
-        .join("node_modules/@am/decisiontree/package.json")
-        .exists());
+    assert!(
+        temp.path()
+            .join("node_modules/@am/decisiontree/package.json")
+            .exists()
+    );
 }
