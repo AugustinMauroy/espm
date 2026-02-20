@@ -34,6 +34,12 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
+    // pass verbose flag to logger so that Logger::debug becomes active
+    Logger::set_verbose(cli.verbose);
+    if cli.verbose {
+        Logger::debug("verbose mode enabled");
+    }
+
     match cli.command {
         Commands::Add {
             specifier,

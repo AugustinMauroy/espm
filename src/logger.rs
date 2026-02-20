@@ -1,9 +1,21 @@
 use colored::Colorize;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static VERBOSE: AtomicBool = AtomicBool::new(false);
 
 pub struct Logger;
 
 #[allow(dead_code)]
 impl Logger {
+    /// enable or disable verbose (debug) mode
+    pub fn set_verbose(value: bool) {
+        VERBOSE.store(value, Ordering::SeqCst);
+    }
+
+    pub fn is_verbose() -> bool {
+        VERBOSE.load(Ordering::SeqCst)
+    }
+
     pub fn info(message: &str) {
         println!("{} {}", "[INFO]".cyan().bold(), message);
     }
@@ -17,7 +29,9 @@ impl Logger {
     }
 
     pub fn debug(message: &str) {
-        println!("{} {}", "[DEBUG]".blue().bold(), message);
+        if Logger::is_verbose() {
+            println!("{} {}", "[DEBUG]".blue().bold(), message);
+        }
     }
 
     pub fn success(message: &str) {

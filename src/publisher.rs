@@ -17,6 +17,8 @@ const JSR_REGISTRY_BASE: &str = "https://npm.jsr.io/";
 const DRY_RUN_TARBALL: &str = "espm-publish.tgz";
 
 pub fn pack_current_package(dir: &Path) -> Result<Vec<u8>> {
+    Logger::debug(&format!("pack_current_package dir={}", dir.display()));
+
     let package_json_path = dir.join("package.json");
     if !package_json_path.exists() {
         return Err(anyhow!(
@@ -36,6 +38,7 @@ pub fn pack_current_package(dir: &Path) -> Result<Vec<u8>> {
     let tarball = encoder
         .finish()
         .context("Failed to finish gzip compression while packaging")?;
+    Logger::debug(&format!("pack_current_package produced {} bytes", tarball.len()));
     Ok(tarball)
 }
 
@@ -44,6 +47,7 @@ fn append_dir_filtered(
     base: &Path,
     dir: &Path,
 ) -> Result<()> {
+    Logger::debug(&format!("append_dir_filtered base={} dir={}", base.display(), dir.display()));
     for entry in fs::read_dir(dir)
         .with_context(|| format!("Failed to read directory {} while packaging", dir.display()))?
     {
@@ -79,6 +83,7 @@ fn append_dir_filtered(
 }
 
 fn package_name_for_registry(scope: Option<&str>, name: &str, use_npm: bool) -> Result<String> {
+    Logger::debug(&format!("package_name_for_registry scope={:?} name={} use_npm={}", scope, name, use_npm));
     if use_npm {
         Ok(match scope {
             Some(scope) => format!("@{}/{}", scope.trim_start_matches('@'), name),
@@ -104,6 +109,8 @@ pub async fn publish_bytes_to_registry(
     tarball: &[u8],
     token: &str,
 ) -> Result<()> {
+    Logger::debug(&format!("publish_bytes_to_registry registry={} package={} size={} token_present={}",
+        registry_base, package_name, tarball.len(), !token.is_empty()));
     let url = format!(
         "{}/{}",
         registry_base.trim_end_matches('/'),
@@ -128,13 +135,17 @@ pub async fn publish_bytes_to_registry(
     let body = response.text().await.unwrap_or_default();
 
     if status.is_success() {
+        Logger::debug(&format!("publish_bytes_to_registry successful status={}", status));
         Ok(())
     } else {
+        Logger::debug(&format!("publish_bytes_to_registry failed status={} body={}", status, body));
         Err(anyhow!("Publish failed with status {}: {}", status, body))
     }
 }
 
 pub async fn publish_from_dir(dir: &Path, use_npm: bool, dry_run: bool) -> Result<()> {
+    Logger::debug(&format!("publish_from_dir dir={} use_npm={} dry_run={}", dir.display(), use_npm, dry_run));
+
     let (scope, name, version) = read_package_manifest_from_dir(dir)
         .with_context(|| format!("Failed to read package.json from {}", dir.display()))?;
     let package_name = package_name_for_registry(scope.as_deref(), &name, use_npm)?;
@@ -143,6 +154,7 @@ pub async fn publish_from_dir(dir: &Path, use_npm: bool, dry_run: bool) -> Resul
         .with_context(|| format!("Failed to package directory {}", dir.display()))?;
 
     if dry_run {
+        Logger::debug("publish_from_dir performing dry_run path write");
         let output_path = dir.join(DRY_RUN_TARBALL);
         fs::write(&output_path, &tarball)
             .with_context(|| format!("Failed to write tarball to {}", output_path.display()))?;
@@ -184,6 +196,7 @@ pub async fn publish_from_dir(dir: &Path, use_npm: bool, dry_run: bool) -> Resul
         tarball.len()
     ));
 
+    Logger::debug("about to call publish_bytes_to_registry");
     publish_bytes_to_registry(registry_base, &package_name, &tarball, &token).await?;
     Logger::success(&format!("Publish request sent for {}", package_name));
     Ok(())

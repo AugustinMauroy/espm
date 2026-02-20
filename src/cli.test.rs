@@ -23,3 +23,13 @@ fn parse_add_command() {
         _ => panic!("Expected add command"),
     }
 }
+
+#[test]
+fn parse_verbose_flag() {
+    let cli = Cli::try_parse_from(["espm", "--verbose", "install"]).unwrap();
+    assert!(cli.verbose);
+    match cli.command {
+        Commands::Install { .. } => {}
+        _ => panic!("Expected install command"),
+    }
+}

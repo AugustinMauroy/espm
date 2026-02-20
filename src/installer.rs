@@ -85,6 +85,7 @@ pub fn npm_package_display(scope: Option<&str>, name: &str) -> String {
 }
 
 pub async fn fetch_json_with_retry<T: DeserializeOwned>(url: &str, attempts: u8) -> Result<T> {
+    Logger::debug(&format!("fetch_json_with_retry url={} attempts={}", url, attempts));
     let client = Client::new();
     let mut last_error: Option<anyhow::Error> = None;
 
@@ -121,6 +122,7 @@ pub async fn fetch_json_with_retry<T: DeserializeOwned>(url: &str, attempts: u8)
 }
 
 pub async fn fetch_bytes_with_retry(url: &str, attempts: u8) -> Result<Vec<u8>> {
+    Logger::debug(&format!("fetch_bytes_with_retry url={} attempts={}", url, attempts));
     let client = Client::new();
     let mut last_error: Option<anyhow::Error> = None;
 
@@ -300,6 +302,7 @@ pub async fn package_identity_from_specifier(
     specifier: &Specifier,
     base_dir: &Path,
 ) -> Result<(Option<String>, String, Option<String>)> {
+    Logger::debug(&format!("package_identity_from_specifier called with {:?}", specifier));
     match specifier.kind.as_str() {
         "jsr" | "npm" => {
             let name = specifier
@@ -389,6 +392,7 @@ pub async fn install_from_lockfile(
     options: InstallOptions,
     require_esm: bool,
 ) -> Result<usize> {
+    Logger::debug(&format!("install_from_lockfile options={:?} require_esm={}", options, require_esm));
     let mut installed_count = 0usize;
 
     for package in &lock.packages {

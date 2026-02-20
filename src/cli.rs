@@ -3,6 +3,10 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[clap(version, about= "espm - ECMAScript Package Manager", long_about = None)]
 pub struct Cli {
+    /// Print debug messages while the command runs
+    #[clap(short, long, global = true, default_value = "false")]
+    pub verbose: bool,
+
     #[clap(subcommand)]
     pub command: Commands,
 }

@@ -1,0 +1,41 @@
+name: Bug report
+description: Use this template for filing a bug report. Provide as much detail as possible.
+body:
+  - type: markdown
+    attributes:
+      value: |-
+        Thanks for taking the time to file an issue!  
+        Please fill out the fields below so we can reproduce and fix the problem.
+  - type: input
+    id: commit_sha
+    attributes:
+      label: Commit SHA
+      description: "Full git commit SHA where you observed the issue."
+      placeholder: "e.g. 3a5f8b2..."
+      required: true
+  - type: textarea
+    id: current_behavior
+    attributes:
+      label: Current behavior
+      description: "Describe what happens when you run the command or use the feature."
+      placeholder: "The command prints an error..."
+      required: true
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Expected behavior
+      description: "What did you expect to happen instead?"
+      required: true
+  - type: textarea
+    id: terminal_output
+    attributes:
+      label: Terminal output with `--verbose`
+      description: "Paste the terminal output including debug logs (run the command with `--verbose`)."
+      placeholder: "[DEBUG] ..."
+      required: false
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional context
+      description: "Any other context (OS, version, steps to reproduce, etc.)."
+      required: false
