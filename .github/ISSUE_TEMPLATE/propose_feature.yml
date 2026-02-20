@@ -1,0 +1,38 @@
+name: Propose new feature
+description: Suggest a new feature or improvement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |-
+        Thanks for taking the time to propose a feature!  
+        Please provide the details below so we can evaluate and prioritize it.
+  - type: input
+    id: title
+    attributes:
+      label: Short description
+      description: A brief, descriptive title for the feature request.
+      placeholder: "e.g. Support plugins for custom formats"
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the problem you're trying to solve or the use case.
+    validations:
+      required: true
+  - type: textarea
+    id: proposed_solution
+    attributes:
+      label: Proposed solution
+      description: How would you like the project to behave? Any ideas or examples?
+    validations:
+      required: false
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional context
+      description: Any other information (links, related issues, etc.).
+    validations:
+      required: false

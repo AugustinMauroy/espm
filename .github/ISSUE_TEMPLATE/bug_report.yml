@@ -1,5 +1,7 @@
 name: Bug report
 description: Use this template for filing a bug report. Provide as much detail as possible.
+title: "[Bug] <short description>"
+labels: ["bug"]
 body:
   - type: markdown
     attributes:
@@ -12,6 +14,7 @@ body:
       label: Commit SHA
       description: "Full git commit SHA where you observed the issue."
       placeholder: "e.g. 3a5f8b2..."
+    validations:
       required: true
   - type: textarea
     id: current_behavior
@@ -19,12 +22,14 @@ body:
       label: Current behavior
       description: "Describe what happens when you run the command or use the feature."
       placeholder: "The command prints an error..."
+    validations:
       required: true
   - type: textarea
     id: expected_behavior
     attributes:
       label: Expected behavior
       description: "What did you expect to happen instead?"
+    validations:
       required: true
   - type: textarea
     id: terminal_output
@@ -32,10 +37,12 @@ body:
       label: Terminal output with `--verbose`
       description: "Paste the terminal output including debug logs (run the command with `--verbose`)."
       placeholder: "[DEBUG] ..."
+    validations:
       required: false
   - type: textarea
     id: additional_context
     attributes:
       label: Additional context
       description: "Any other context (OS, version, steps to reproduce, etc.)."
+    validations:
       required: false
