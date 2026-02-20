@@ -16,10 +16,10 @@ This file captures the **current implementation status** of `espm` so an LLM (or
 | Command | Spec Expectation | Current Status | Notes |
 |---|---|---|---|
 | `init` | create `espm.json` | ✅ Implemented | Creates `espm.json` if missing |
-| `add` | add dep to import map (+ dev option) and install | ✅ Implemented | Supports `jsr:` / `npm:`; `file:` and `http(s):` accepted as specifiers but install handling is limited |
+| `add` | add dep to import map (+ dev option) and install | ✅ Implemented | Supports `jsr:` / `npm:` / `file:` / `http(s):`; for `file:` and `http(s):` the package name is inferred from package metadata; lockfile is refreshed after add |
 | `install` | install deps (+ `--dev`) | ✅ Implemented (+ `--force`) | Lockfile-first (`espm-lock.json`), fallback resolve from `espm.json`, skip reinstall when version already installed |
-| `update <pkg>` | update to latest compatible version and reinstall | ✅ Implemented | Works for JSR and NPM dependencies in `import_map` / `import_map_dev` |
-| `remove <pkg>` | remove from config and installed tree | ✅ Implemented | Removes from both maps and from `node_modules` |
+| `update <pkg>` | update to latest compatible version and reinstall | ✅ Implemented | Works for JSR and NPM; `file:` and `http(s):` are intentionally treated as not updateable and are skipped with a warning |
+| `remove <pkg>` | remove from config and installed tree | ✅ Implemented | Removes from both maps and from `node_modules` (including `file:` and `http(s):` dependencies by package key) |
 | `publish` | publish package (JSR/NPM) | ❌ Not implemented | Emits warning at runtime |
 | `setup` | pin/setup CLI version | ❌ Not implemented | Emits warning at runtime |
 
@@ -29,8 +29,8 @@ This file captures the **current implementation status** of `espm` so an LLM (or
 |---|---|---|---|
 | `jsr:@scope/name@version` | required | ✅ Implemented | Uses npm.jsr metadata and tarball |
 | `npm:name@version` / `npm:@scope/name@version` | required | ✅ Implemented | Scoped + unscoped supported |
-| `file:...` | listed in spec | ⚠️ Partial | Parsed, but install/download path currently logs unsupported |
-| `http(s)://...` | listed in spec | ⚠️ Partial | Parsed, but install/download path currently logs unsupported |
+| `file:...` | listed in spec | ✅ Implemented | Supports local directory and local `.tgz` package installs |
+| `http(s)://...` | listed in spec | ✅ Implemented | Supports remote `.tgz` package installs |
 
 ## Lockfile Behavior
 
@@ -39,6 +39,8 @@ This file captures the **current implementation status** of `espm` so an LLM (or
   - if lockfile exists: install from lockfile tarball URLs;
   - otherwise: resolve from `espm.json`, install, then write lockfile.
 - `--force` bypasses skip checks and reinstalls packages.
+- for `file:` dependencies lockfile stores resolved local source path used for deterministic reinstall.
+- for `http(s):` dependencies lockfile stores exact tarball URL used for deterministic reinstall.
 
 ## Install Behavior Details
 
@@ -50,8 +52,9 @@ This file captures the **current implementation status** of `espm` so an LLM (or
 ## Spec Drift / Known Gaps
 
 1. `publish` and `setup` remain unimplemented.
-2. Spec lists `file:` and `http(s):` dependencies; runtime behavior is still placeholder for install/download.
-3. Spec mentions lockfile concept; implementation uses `espm-lock.json` naming consistently (not `espm.lock`).
+2. `update` does not upgrade `file:` or `http(s):` dependencies (intentionally not updateable).
+3. `add` currently refreshes via full dependency reinstall; optimization target is affected-graph-only refresh.
+4. Spec mentions lockfile concept; implementation uses `espm-lock.json` naming consistently (not `espm.lock`).
 
 ## Code Organization (Current)
 

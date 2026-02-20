@@ -2,9 +2,18 @@
 
 ## Concept
 
-- Only for ES Modules
+- Only for ES Modules (warn when downloading packages that don't have ESM entry points)
 - Avoid `package.json` such as possible
 - Reduce config files
+
+## Non-Goals
+
+- bundling, transpilation, or other build steps (focus on package management and registry interactions) "package manager" not "build tool"
+
+## Future goals
+
+- npm cli compatibility (e.g., `package.json`, `package-lock.json`) so if project use npm you can just use espm
+- optimize `add` to refresh only the affected dependency graph instead of reinstalling all dependencies
 
 ## Questions ???
 
@@ -28,6 +37,8 @@
   - Options:
     - `-d`, `--dev`: Add the package as a development dependency. It will be added to `import_map_dev` in `espm.json`.
   - Action: Adds the specified package to the project's `espm.json` file (either to `imports` or `import_map_dev.imports`) and installs it into `node_modules`.
+    - For `file:` and `http(s):` dependencies, `espm` infers the dependency key from the package metadata (`package.json` name).
+    - `add` refreshes `espm-lock.json` immediately after config changes to keep deterministic reinstall behavior aligned.
 
 `espm install` [`--dev`] [`--force`]
   - Action:
@@ -41,7 +52,8 @@
 
 `espm update <package_name>`
   - `<package_name>`: The name of the package to update as it appears as a key in `espm.json`'s import maps (e.g., `lodash`, `@foo/bar`).
-  - Action: For JSR or NPM packages, this command checks for the latest compatible version according to the version constraint in `espm.json`. If a newer version is found, it updates the version in `espm.json` and reinstalls the package. It does not automatically update `file:` or `http(s)://` dependencies unless they support a versioning scheme understood by `espm`.
+  - Action: For JSR or NPM packages, this command checks for the latest compatible version according to the version constraint in `espm.json`. If a newer version is found, it updates the version in `espm.json` and reinstalls the package.
+  - `file:` and `http(s):` dependencies are intentionally treated as **not updateable** and are skipped with a warning.
 
 `espm remove <package_name>`
   - `<package_name>`: The name of the package to remove as it appears as a key in `espm.json`'s import maps.
@@ -79,6 +91,8 @@
 
 - `espm.json(c)` - ???
 - `espm-lock.json` - Lockfile containing resolved package versions and tarball URLs used for deterministic installs.
+  - For `file:` dependencies, the lockfile stores the resolved local source path used for deterministic reinstall.
+  - For `http(s):` dependencies, the lockfile stores the exact tarball URL used for deterministic reinstall.
 
 ```jsonc
 {

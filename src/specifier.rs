@@ -200,7 +200,10 @@ mod tests {
 
     #[test]
     fn helper_functions_behavior() {
-        assert_eq!(jsr_package_to_npm_package("scope", "my-pkg"), "@jsr/scope__my-pkg");
+        assert_eq!(
+            jsr_package_to_npm_package("scope", "my-pkg"),
+            "@jsr/scope__my-pkg"
+        );
         assert_eq!(
             npm_tarball_url(Some("types"), "node", "20.0.0"),
             "https://registry.npmjs.org/@types/node/-/node-20.0.0.tgz"

@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::env;
 use std::fs;
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use tar::Archive;
 use tokio::time::{sleep, Duration};
@@ -29,15 +29,6 @@ use specifier::{
     jsr_package_to_npm_package, npm_tarball_url, parse_npm_dependency_name,
     requested_specifier_from_parts, Specifier,
 };
-
-
-async fn create_directory_if_not_exists(dir: &str) -> Result<()> {
-    let path = Path::new(dir);
-    if !path.exists() {
-        fs::create_dir_all(path).with_context(|| format!("Failed to create directory: {}", dir))?;
-    }
-    Ok(())
-}
 
 async fn get_espm_json_path() -> Result<std::path::PathBuf> {
     let mut current_dir = env::current_dir().context("Failed to get current directory")?;
@@ -66,6 +57,33 @@ fn package_id(kind: &str, scope: Option<&str>, name: &str) -> String {
     }
 }
 
+fn package_key(scope: Option<&str>, name: &str) -> String {
+    match scope {
+        Some(s) => format!("@{}/{}", s.trim_start_matches('@'), name),
+        None => name.to_string(),
+    }
+}
+
+fn parse_package_key(input: &str) -> Result<(Option<String>, String)> {
+    if let Some((scope, name)) = parse_npm_dependency_name(input) {
+        return Ok((scope, name));
+    }
+
+    if input.trim().is_empty() {
+        return Err(anyhow::anyhow!("Package key cannot be empty"));
+    }
+
+    Ok((None, input.to_string()))
+}
+
+fn parse_lock_package_id(id: &str) -> Result<(String, Option<String>, String)> {
+    let (kind, rest) = id
+        .split_once(':')
+        .ok_or_else(|| anyhow::anyhow!("Invalid lock package id '{}'", id))?;
+    let (scope, name) = parse_package_key(rest)?;
+    Ok((kind.to_string(), scope, name))
+}
+
 fn npm_package_display(scope: Option<&str>, name: &str) -> String {
     match scope {
         Some(s) => format!("@{}/{}", s.trim_start_matches('@'), name),
@@ -90,11 +108,8 @@ async fn fetch_json_with_retry<T: DeserializeOwned>(url: &str, attempts: u8) -> 
                     match response.json::<T>().await {
                         Ok(parsed) => return Ok(parsed),
                         Err(e) => {
-                            last_error = Some(anyhow::anyhow!(
-                                "Failed to parse JSON from {}: {}",
-                                url,
-                                e
-                            ));
+                            last_error =
+                                Some(anyhow::anyhow!("Failed to parse JSON from {}: {}", url, e));
                         }
                     }
                 }
@@ -151,6 +166,128 @@ async fn fetch_bytes_with_retry(url: &str, attempts: u8) -> Result<Vec<u8>> {
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Unknown error for {}", url)))
 }
 
+fn parse_package_name_field(name: &str) -> Result<(Option<String>, String)> {
+    parse_npm_dependency_name(name)
+        .ok_or_else(|| anyhow::anyhow!("Invalid package name '{}' in package.json", name))
+}
+
+fn read_package_manifest_from_dir(path: &Path) -> Result<(Option<String>, String, Option<String>)> {
+    let package_json_path = path.join("package.json");
+    let content = fs::read_to_string(&package_json_path)
+        .with_context(|| format!("Failed to read {}", package_json_path.display()))?;
+    let package_json: serde_json::Value = serde_json::from_str(&content)
+        .with_context(|| format!("Failed to parse {}", package_json_path.display()))?;
+
+    let package_name = package_json
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing 'name' in {}", package_json_path.display()))?;
+    let (scope, name) = parse_package_name_field(package_name)?;
+    let version = package_json
+        .get("version")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+
+    Ok((scope, name, version))
+}
+
+fn read_package_manifest_from_tgz_bytes(
+    bytes: &[u8],
+    source_label: &str,
+) -> Result<(Option<String>, String, Option<String>)> {
+    let tar = GzDecoder::new(Cursor::new(bytes));
+    let mut archive = Archive::new(tar);
+
+    for entry in archive
+        .entries()
+        .with_context(|| format!("Failed to read entries from {}", source_label))?
+    {
+        let mut entry = entry?;
+        let path = entry.path()?;
+        if path.to_string_lossy().ends_with("package.json") {
+            let mut content = String::new();
+            entry
+                .read_to_string(&mut content)
+                .with_context(|| format!("Failed to read package.json from {}", source_label))?;
+            let package_json: serde_json::Value = serde_json::from_str(&content)
+                .with_context(|| format!("Invalid package.json in {}", source_label))?;
+
+            let package_name = package_json
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("Missing package name in {}", source_label))?;
+            let (scope, name) = parse_package_name_field(package_name)?;
+            let version = package_json
+                .get("version")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+
+            return Ok((scope, name, version));
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "Could not find package.json inside tarball from {}",
+        source_label
+    ))
+}
+
+fn resolve_file_source_path(base_dir: &Path, raw_path: &str) -> PathBuf {
+    let as_path = Path::new(raw_path);
+    if as_path.is_absolute() {
+        as_path.to_path_buf()
+    } else {
+        base_dir.join(as_path)
+    }
+}
+
+async fn package_identity_from_specifier(
+    specifier: &Specifier,
+    base_dir: &Path,
+) -> Result<(Option<String>, String, Option<String>)> {
+    match specifier.kind.as_str() {
+        "jsr" | "npm" => {
+            let name = specifier
+                .name
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("Missing package name in '{}'", specifier.source))?;
+            Ok((specifier.scope.clone(), name, specifier.version.clone()))
+        }
+        "file" => {
+            let raw_path = specifier.path.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("Missing file path in specifier '{}'", specifier.source)
+            })?;
+            let resolved_path = resolve_file_source_path(base_dir, raw_path);
+            if resolved_path.is_dir() {
+                read_package_manifest_from_dir(&resolved_path)
+            } else {
+                let bytes = fs::read(&resolved_path).with_context(|| {
+                    format!(
+                        "Failed to read local package file {}",
+                        resolved_path.display()
+                    )
+                })?;
+                read_package_manifest_from_tgz_bytes(&bytes, &resolved_path.to_string_lossy())
+            }
+        }
+        "http" | "https" => {
+            let bytes = fetch_bytes_with_retry(&specifier.source, 3)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to inspect remote package metadata from {}",
+                        specifier.source
+                    )
+                })?;
+            read_package_manifest_from_tgz_bytes(&bytes, &specifier.source)
+        }
+        _ => Err(anyhow::anyhow!(
+            "Unsupported specifier kind '{}'",
+            specifier.kind
+        )),
+    }
+}
+
 fn preferred_lockfile_path(base_dir: &Path) -> std::path::PathBuf {
     base_dir.join("espm-lock.json")
 }
@@ -200,43 +337,62 @@ async fn install_from_lockfile(lock: &EspmLock, options: InstallOptions) -> Resu
             continue;
         }
 
-        let specifier = Specifier::from_string(&package.source).with_context(|| {
-            format!(
-                "Invalid package source '{}' in lockfile entry '{}'",
-                package.source, package.id
-            )
-        })?;
-
-        if specifier.kind != "npm" && specifier.kind != "jsr" {
-            Logger::warn(&format!(
-                "Skipping unsupported lockfile package kind '{}' for {}",
-                specifier.kind, package.id
-            ));
-            continue;
-        }
-
-        let name = specifier.name.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("Missing package name in lockfile source '{}'.", package.source)
-        })?;
+        let (kind, scope, name) = parse_lock_package_id(&package.id)?;
 
         if !options.force
-            && should_skip_reinstall(specifier.scope.as_deref(), name, &package.resolved_version)
+            && should_skip_reinstall(scope.as_deref(), &name, &package.resolved_version)
         {
             Logger::info(&format!(
                 "Skipping {}@{} (already installed)",
-                package.id,
-                package.resolved_version
+                package.id, package.resolved_version
             ));
             continue;
         }
 
-        download_tarball(
-            &package.tarball,
-            specifier.scope.as_deref().unwrap_or(""),
-            name,
-        )
-        .await
-        .with_context(|| format!("Failed to install {} from lockfile", package.id))?;
+        match kind.as_str() {
+            "npm" | "jsr" => {
+                download_tarball(&package.tarball, scope.as_deref().unwrap_or(""), &name)
+                    .await
+                    .with_context(|| format!("Failed to install {} from lockfile", package.id))?;
+            }
+            "file" => {
+                let source_path = Path::new(&package.tarball);
+                if source_path.is_dir() {
+                    install_directory_to_node_modules(source_path, scope.as_deref(), &name)?;
+                } else {
+                    let bytes = fs::read(source_path).with_context(|| {
+                        format!(
+                            "Failed to read local file package from {}",
+                            source_path.display()
+                        )
+                    })?;
+                    extract_tarball_to_node_modules(
+                        &bytes,
+                        scope.as_deref().unwrap_or(""),
+                        &name,
+                        &package.tarball,
+                    )?;
+                }
+            }
+            "http" | "https" => {
+                let bytes = fetch_bytes_with_retry(&package.tarball, 3)
+                    .await
+                    .with_context(|| format!("Failed to download {}", package.tarball))?;
+                extract_tarball_to_node_modules(
+                    &bytes,
+                    scope.as_deref().unwrap_or(""),
+                    &name,
+                    &package.tarball,
+                )?;
+            }
+            _ => {
+                Logger::warn(&format!(
+                    "Skipping unsupported lockfile package kind '{}' for {}",
+                    kind, package.id
+                ));
+                continue;
+            }
+        }
 
         installed_count += 1;
     }
@@ -315,36 +471,46 @@ async fn download_tarball(tarball_url: &str, scope: &str, name: &str) -> Result<
         .await
         .with_context(|| format!("Failed to download tarball from {}", tarball_url))?;
 
+    extract_tarball_to_node_modules(&content, scope, name, tarball_url)
+}
+
+fn extract_tarball_to_node_modules(
+    content: &[u8],
+    scope: &str,
+    name: &str,
+    source_label: &str,
+) -> Result<()> {
     let tar = GzDecoder::new(Cursor::new(content));
     let mut archive = Archive::new(tar);
 
-    // Ensure the base node_modules directory exists
-    create_directory_if_not_exists("./node_modules").await?;
+    fs::create_dir_all("./node_modules").context("Failed to create node_modules directory")?;
 
-    // If scope is not empty, use @<scope>/<name>, else just <name>
-    let target_dir = if !scope.is_empty() {
-        format!("./node_modules/@{}/{}", scope.trim_start_matches('@'), name)
-    } else {
-        format!("./node_modules/{}", name)
-    };
+    let target_dir = package_install_path(if scope.is_empty() { None } else { Some(scope) }, name);
 
-    if Path::new(&target_dir).exists() {
-        fs::remove_dir_all(&target_dir)
-            .with_context(|| format!("Failed to clean existing directory {}", target_dir))?;
+    if target_dir.exists() {
+        fs::remove_dir_all(&target_dir).with_context(|| {
+            format!(
+                "Failed to clean existing directory {}",
+                target_dir.display()
+            )
+        })?;
     }
-    create_directory_if_not_exists(&target_dir).await?;
+    fs::create_dir_all(&target_dir)
+        .with_context(|| format!("Failed to create directory {}", target_dir.display()))?;
 
-    // Extract the tarball into the target directory, stripping the first component (usually "package/")
     for entry in archive
         .entries()
-        .with_context(|| format!("Failed to read entries from tarball {}", tarball_url))?
+        .with_context(|| format!("Failed to read entries from tarball {}", source_label))?
     {
         let mut entry = entry?;
         let path = entry.path()?;
         let mut components = path.components();
-        components.next(); // Strip the first component ("package" or similar)
+        components.next();
         let stripped_path: std::path::PathBuf = components.as_path().to_path_buf();
-        let out_path = Path::new(&target_dir).join(&stripped_path);
+        if stripped_path.as_os_str().is_empty() {
+            continue;
+        }
+        let out_path = target_dir.join(&stripped_path);
         if let Some(parent) = out_path.parent() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("Failed to create directory: {:?}", parent))?;
@@ -355,6 +521,47 @@ async fn download_tarball(tarball_url: &str, scope: &str, name: &str) -> Result<
     }
 
     Ok(())
+}
+
+fn copy_directory_recursive(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst)
+        .with_context(|| format!("Failed to create directory {}", dst.display()))?;
+
+    for entry in fs::read_dir(src)
+        .with_context(|| format!("Failed to read source directory {}", src.display()))?
+    {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let source_path = entry.path();
+        let destination_path = dst.join(entry.file_name());
+
+        if file_type.is_dir() {
+            copy_directory_recursive(&source_path, &destination_path)?;
+        } else {
+            fs::copy(&source_path, &destination_path).with_context(|| {
+                format!(
+                    "Failed to copy {} to {}",
+                    source_path.display(),
+                    destination_path.display()
+                )
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
+fn install_directory_to_node_modules(src: &Path, scope: Option<&str>, name: &str) -> Result<()> {
+    let target_dir = package_install_path(scope, name);
+    if target_dir.exists() {
+        fs::remove_dir_all(&target_dir).with_context(|| {
+            format!(
+                "Failed to clean existing directory {}",
+                target_dir.display()
+            )
+        })?;
+    }
+    copy_directory_recursive(src, &target_dir)
 }
 
 async fn download_jsr_package(scope: &str, name: &str, version: &str) -> Result<()> {
@@ -516,6 +723,7 @@ async fn resolve_npm_package(
         .ok_or_else(|| anyhow::anyhow!("Version {} not found in package metadata", version))?;
 
     Ok(ResolvedPackage {
+        kind: "npm".to_string(),
         key: package_id("npm", scope, name),
         source: requested_specifier_from_parts("npm", scope, name, &version),
         scope: scope.map(|s| s.trim_start_matches('@').to_string()),
@@ -548,6 +756,7 @@ async fn resolve_jsr_package(
         .ok_or_else(|| anyhow::anyhow!("Version {} not found in package metadata", version))?;
 
     Ok(ResolvedPackage {
+        kind: "jsr".to_string(),
         key: package_id("jsr", Some(scope), name),
         source: requested_specifier_from_parts("jsr", Some(scope), name, &version),
         scope: Some(scope.trim_start_matches('@').to_string()),
@@ -560,9 +769,12 @@ async fn resolve_jsr_package(
     })
 }
 
-async fn download_package(specifier: &Specifier, _is_dev: bool) -> Result<()> {
-    let scope = specifier.scope.as_deref().unwrap_or("default");
-    let name = specifier.name.as_deref().unwrap_or("unknown");
+async fn download_package(specifier: &Specifier, _is_dev: bool, base_dir: &Path) -> Result<()> {
+    let (identity_scope, identity_name, _) =
+        package_identity_from_specifier(specifier, base_dir).await?;
+
+    let scope = identity_scope.as_deref().unwrap_or("default");
+    let name = identity_name.as_str();
     let version = specifier.version.as_deref().unwrap_or("latest");
 
     match specifier.kind.as_str() {
@@ -589,12 +801,37 @@ async fn download_package(specifier: &Specifier, _is_dev: bool) -> Result<()> {
             download_npm_package(specifier.scope.as_deref(), name, version).await?;
         }
         "file" => {
-            Logger::info("Adding file:// non encore supporté");
-            // vous pourriez appeler quelque chose comme download_file_package(...)
+            let path = specifier.path.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("Missing file path in specifier '{}'", specifier.source)
+            })?;
+            let resolved_path = resolve_file_source_path(base_dir, path);
+            if resolved_path.is_dir() {
+                install_directory_to_node_modules(&resolved_path, identity_scope.as_deref(), name)?;
+            } else {
+                let bytes = fs::read(&resolved_path).with_context(|| {
+                    format!(
+                        "Failed to read local package file {}",
+                        resolved_path.display()
+                    )
+                })?;
+                extract_tarball_to_node_modules(
+                    &bytes,
+                    identity_scope.as_deref().unwrap_or(""),
+                    name,
+                    &resolved_path.to_string_lossy(),
+                )?;
+            }
         }
         "http" | "https" => {
-            Logger::info("Adding HTTP(S) non encore supporté");
-            // vous pourriez appeler quelque chose comme download_http_package(...)
+            let bytes = fetch_bytes_with_retry(&specifier.source, 3)
+                .await
+                .with_context(|| format!("Failed to download {}", specifier.source))?;
+            extract_tarball_to_node_modules(
+                &bytes,
+                identity_scope.as_deref().unwrap_or(""),
+                name,
+                &specifier.source,
+            )?;
         }
         _ => {
             return Err(anyhow::anyhow!(
@@ -616,10 +853,6 @@ async fn handle_add_command(specifier: String, is_dev: bool) -> Result<()> {
     let specifier = Specifier::from_string(&specifier)
         .with_context(|| format!("Failed to parse specifier: {}", specifier))?;
 
-    download_package(&specifier, is_dev)
-        .await
-        .with_context(|| format!("Failed to download package: {}", specifier.source))?;
-
     // Load espm.json (or create if missing)
     let espm_json_path = match get_espm_json_path().await {
         Ok(path) => path,
@@ -634,6 +867,16 @@ async fn handle_add_command(specifier: String, is_dev: bool) -> Result<()> {
             path
         }
     };
+
+    let base_dir = espm_json_path.parent().unwrap_or_else(|| Path::new("."));
+    let (identity_scope, identity_name, _) = package_identity_from_specifier(&specifier, base_dir)
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to determine package identity for {}",
+                specifier.source
+            )
+        })?;
 
     let content = fs::read_to_string(&espm_json_path)
         .with_context(|| format!("Failed to read espm.json from {}", espm_json_path.display()))?;
@@ -653,11 +896,7 @@ async fn handle_add_command(specifier: String, is_dev: bool) -> Result<()> {
     };
 
     // Add or update the dependency in the import_map
-    let dep_name = if let Some(scope) = &specifier.scope {
-        format!("@{}/{}", scope, specifier.name.as_deref().unwrap_or(""))
-    } else {
-        specifier.name.as_deref().unwrap_or("").to_string()
-    };
+    let dep_name = package_key(identity_scope.as_deref(), &identity_name);
     import_map
         .imports
         .insert(dep_name, specifier.source.clone());
@@ -666,6 +905,20 @@ async fn handle_add_command(specifier: String, is_dev: bool) -> Result<()> {
 
     fs::write(&espm_json_path, serde_json::to_string_pretty(&espm_json)?)
         .with_context(|| format!("Failed to write espm.json at {}", espm_json_path.display()))?;
+
+    let lock_path = preferred_lockfile_path(base_dir);
+    if lock_path.exists() {
+        fs::remove_file(&lock_path).with_context(|| {
+            format!("Failed to remove stale lockfile at {}", lock_path.display())
+        })?;
+    }
+
+    handle_install_command(true, false).await.with_context(|| {
+        format!(
+            "Failed to refresh installation and lockfile after adding {}",
+            specifier.source
+        )
+    })?;
 
     Logger::success(&format!(
         "Package {} added successfully to {}.",
@@ -682,7 +935,7 @@ async fn handle_add_command(specifier: String, is_dev: bool) -> Result<()> {
 fn requests_from_import_map(import_map: &ImportMap, dev: bool) -> Result<Vec<DependencyRequest>> {
     let mut requests = Vec::new();
 
-    for value in import_map.imports.values() {
+    for (dep_key, value) in &import_map.imports {
         let specifier = Specifier::from_string(value)
             .with_context(|| format!("Invalid dependency specifier '{}'", value))?;
 
@@ -694,6 +947,7 @@ fn requests_from_import_map(import_map: &ImportMap, dev: bool) -> Result<Vec<Dep
                     .ok_or_else(|| anyhow::anyhow!("Missing package name in '{}'", value))?;
 
                 requests.push(DependencyRequest {
+                    source: value.clone(),
                     kind: specifier.kind,
                     scope: specifier.scope,
                     name,
@@ -701,11 +955,21 @@ fn requests_from_import_map(import_map: &ImportMap, dev: bool) -> Result<Vec<Dep
                     dev,
                 });
             }
+            "file" | "http" | "https" => {
+                let (scope, name) = parse_package_key(dep_key)?;
+                requests.push(DependencyRequest {
+                    source: value.clone(),
+                    kind: specifier.kind,
+                    scope,
+                    name,
+                    requirement: None,
+                    dev,
+                });
+            }
             other => {
                 Logger::warn(&format!(
                     "Skipping unsupported dependency kind '{}' for '{}'",
-                    other,
-                    value
+                    other, value
                 ));
             }
         }
@@ -719,6 +983,7 @@ fn dependency_requests_from_package(pkg: &ResolvedPackage) -> Vec<DependencyRequ
         .iter()
         .filter_map(|(dep_name, requirement)| {
             parse_npm_dependency_name(dep_name).map(|(scope, name)| DependencyRequest {
+                source: requested_specifier_from_parts("npm", scope.as_deref(), &name, requirement),
                 kind: "npm".to_string(),
                 scope,
                 name,
@@ -729,7 +994,10 @@ fn dependency_requests_from_package(pkg: &ResolvedPackage) -> Vec<DependencyRequ
         .collect()
 }
 
-async fn resolve_dependency_request(request: &DependencyRequest) -> Result<ResolvedPackage> {
+async fn resolve_dependency_request(
+    request: &DependencyRequest,
+    base_dir: &Path,
+) -> Result<ResolvedPackage> {
     match request.kind.as_str() {
         "npm" => {
             resolve_npm_package(
@@ -741,12 +1009,70 @@ async fn resolve_dependency_request(request: &DependencyRequest) -> Result<Resol
             .await
         }
         "jsr" => {
-            let scope = request
-                .scope
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("JSR package '{}' is missing scope", request.name))?;
-            resolve_jsr_package(scope, &request.name, request.requirement.as_deref(), request.dev)
+            let scope = request.scope.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("JSR package '{}' is missing scope", request.name)
+            })?;
+            resolve_jsr_package(
+                scope,
+                &request.name,
+                request.requirement.as_deref(),
+                request.dev,
+            )
+            .await
+        }
+        "file" => {
+            let specifier = Specifier::from_string(&request.source)
+                .with_context(|| format!("Invalid file specifier '{}'", request.source))?;
+            let raw_path = specifier.path.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("Missing file path in specifier '{}'", request.source)
+            })?;
+            let resolved_path = resolve_file_source_path(base_dir, raw_path);
+            let version = if resolved_path.is_dir() {
+                read_package_manifest_from_dir(&resolved_path)?.2
+            } else {
+                let bytes = fs::read(&resolved_path).with_context(|| {
+                    format!(
+                        "Failed to read local package file {}",
+                        resolved_path.display()
+                    )
+                })?;
+                read_package_manifest_from_tgz_bytes(&bytes, &resolved_path.to_string_lossy())?.2
+            }
+            .unwrap_or_else(|| "0.0.0".to_string());
+
+            Ok(ResolvedPackage {
+                kind: "file".to_string(),
+                key: package_id("file", request.scope.as_deref(), &request.name),
+                source: request.source.clone(),
+                scope: request.scope.clone(),
+                name: request.name.clone(),
+                requested: None,
+                version,
+                tarball: resolved_path.to_string_lossy().to_string(),
+                dependencies: HashMap::new(),
+                dev: request.dev,
+            })
+        }
+        "http" | "https" => {
+            let bytes = fetch_bytes_with_retry(&request.source, 3)
                 .await
+                .with_context(|| format!("Failed to inspect remote package {}", request.source))?;
+            let version = read_package_manifest_from_tgz_bytes(&bytes, &request.source)
+                .map(|(_, _, version)| version.unwrap_or_else(|| "0.0.0".to_string()))
+                .unwrap_or_else(|_| "0.0.0".to_string());
+
+            Ok(ResolvedPackage {
+                kind: request.kind.clone(),
+                key: package_id(&request.kind, request.scope.as_deref(), &request.name),
+                source: request.source.clone(),
+                scope: request.scope.clone(),
+                name: request.name.clone(),
+                requested: None,
+                version,
+                tarball: request.source.clone(),
+                dependencies: HashMap::new(),
+                dev: request.dev,
+            })
         }
         _ => Err(anyhow::anyhow!(
             "Unsupported dependency kind '{}'",
@@ -759,16 +1085,42 @@ async fn install_resolved_package(pkg: &ResolvedPackage, options: InstallOptions
     if !options.force && should_skip_reinstall(pkg.scope.as_deref(), &pkg.name, &pkg.version) {
         Logger::info(&format!(
             "Skipping {}@{} (already installed)",
-            pkg.key,
-            pkg.version
+            pkg.key, pkg.version
         ));
         return Ok(false);
     }
 
     let scope = pkg.scope.as_deref().unwrap_or("");
-    download_tarball(&pkg.tarball, scope, &pkg.name)
-        .await
-        .with_context(|| format!("Failed to install {}", pkg.source))?;
+    match pkg.kind.as_str() {
+        "npm" | "jsr" => {
+            download_tarball(&pkg.tarball, scope, &pkg.name)
+                .await
+                .with_context(|| format!("Failed to install {}", pkg.source))?;
+        }
+        "file" => {
+            let source_path = Path::new(&pkg.tarball);
+            if source_path.is_dir() {
+                install_directory_to_node_modules(source_path, pkg.scope.as_deref(), &pkg.name)?;
+            } else {
+                let bytes = fs::read(source_path).with_context(|| {
+                    format!(
+                        "Failed to read local package file {}",
+                        source_path.display()
+                    )
+                })?;
+                extract_tarball_to_node_modules(&bytes, scope, &pkg.name, &pkg.tarball)?;
+            }
+        }
+        "http" | "https" => {
+            let bytes = fetch_bytes_with_retry(&pkg.tarball, 3)
+                .await
+                .with_context(|| format!("Failed to download {}", pkg.tarball))?;
+            extract_tarball_to_node_modules(&bytes, scope, &pkg.name, &pkg.tarball)?;
+        }
+        other => {
+            return Err(anyhow::anyhow!("Unsupported package kind '{}'", other));
+        }
+    }
 
     Ok(true)
 }
@@ -781,7 +1133,10 @@ fn finalize_lockfile(mut entries: Vec<LockPackage>) -> EspmLock {
     }
 }
 
-fn build_install_queue(espm_json: &EspmJson, options: InstallOptions) -> Result<VecDeque<DependencyRequest>> {
+fn build_install_queue(
+    espm_json: &EspmJson,
+    options: InstallOptions,
+) -> Result<VecDeque<DependencyRequest>> {
     let mut queue: VecDeque<DependencyRequest> = VecDeque::new();
 
     if let Some(import_map) = &espm_json.import_map {
@@ -801,7 +1156,10 @@ fn build_install_queue(espm_json: &EspmJson, options: InstallOptions) -> Result<
     Ok(queue)
 }
 
-async fn try_install_from_lockfile(base_dir: &Path, options: InstallOptions) -> Result<Option<usize>> {
+async fn try_install_from_lockfile(
+    base_dir: &Path,
+    options: InstallOptions,
+) -> Result<Option<usize>> {
     match read_lockfile(base_dir) {
         Ok(Some(lock)) => {
             Logger::info("Using lockfile for deterministic install.");
@@ -866,17 +1224,20 @@ async fn handle_install_command(dev: bool, force: bool) -> Result<()> {
     let mut installed_count = 0usize;
 
     while let Some(request) = queue.pop_front() {
-        let resolved = resolve_dependency_request(&request)
+        let resolved = resolve_dependency_request(&request, base_dir)
             .await
-            .with_context(|| format!("Failed to resolve {} package {}", request.kind, request.name))?;
+            .with_context(|| {
+                format!(
+                    "Failed to resolve {} package {}",
+                    request.kind, request.name
+                )
+            })?;
 
         if let Some(existing_version) = installed_versions.get(&resolved.key) {
             if existing_version != &resolved.version {
                 Logger::warn(&format!(
                     "Version conflict for {}: keeping {}, skipping {}",
-                    resolved.key,
-                    existing_version,
-                    resolved.version
+                    resolved.key, existing_version, resolved.version
                 ));
             }
             continue;
@@ -923,14 +1284,18 @@ async fn handle_init_command() -> Result<()> {
     let espm_json_path = std::env::current_dir()
         .unwrap_or_else(|_| std::path::PathBuf::from("."))
         .join("espm.json");
-    let cwd = std::env::current_dir()
-        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
     if !espm_json_path.exists() {
         let new_espm_json = EspmJson {
-            name: Some(cwd.file_name().unwrap_or_default().to_string_lossy().to_string()),
+            name: Some(
+                cwd.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string(),
+            ),
             import_map: None,
-            import_map_dev: None 
+            import_map_dev: None,
         };
         fs::write(
             &espm_json_path,
@@ -1033,9 +1398,17 @@ async fn handle_remove_command(package: String) -> Result<()> {
             if name.starts_with('@') {
                 if let Some((scope, _)) = name.split_once('/') {
                     let scope_path = node_modules_path.join(scope);
-                    if scope_path.exists() && scope_path.read_dir().map(|mut d| d.next().is_none()).unwrap_or(false) {
+                    if scope_path.exists()
+                        && scope_path
+                            .read_dir()
+                            .map(|mut d| d.next().is_none())
+                            .unwrap_or(false)
+                    {
                         if let Err(e) = fs::remove_dir_all(&scope_path) {
-                            Logger::warn(&format!("Failed to remove scope directory {:?}: {}", scope_path, e));
+                            Logger::warn(&format!(
+                                "Failed to remove scope directory {:?}: {}",
+                                scope_path, e
+                            ));
                         }
                     }
                 }
@@ -1097,18 +1470,13 @@ async fn handle_update_command(package: String) -> Result<()> {
                 let name = parsed.name.as_deref().ok_or_else(|| {
                     anyhow::anyhow!("NPM specifier '{}' is missing package name", parsed.source)
                 })?;
-                resolve_latest_npm_version(
-                    parsed.scope.as_deref(),
-                    name,
-                    parsed.version.as_deref(),
-                )
-                .await?
+                resolve_latest_npm_version(parsed.scope.as_deref(), name, parsed.version.as_deref())
+                    .await?
             }
             _ => {
                 Logger::warn(&format!(
                     "Skipping '{}' because '{}' dependencies are not updateable yet.",
-                    dep_key,
-                    parsed.kind
+                    dep_key, parsed.kind
                 ));
                 continue;
             }
@@ -1159,12 +1527,15 @@ async fn handle_update_command(package: String) -> Result<()> {
 
         let new_specifier = Specifier::from_string(&new_source)
             .with_context(|| format!("Failed to parse updated specifier '{}'", new_source))?;
-        download_package(&new_specifier, is_dev).await.with_context(|| {
-            format!(
-                "Failed to install updated package '{}' ({})",
-                dep_key, new_source
-            )
-        })?;
+        let base_dir = espm_json_path.parent().unwrap_or_else(|| Path::new("."));
+        download_package(&new_specifier, is_dev, base_dir)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to install updated package '{}' ({})",
+                    dep_key, new_source
+                )
+            })?;
 
         Logger::success(&format!(
             "Updated {} to {}",
@@ -1212,6 +1583,93 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    use std::io::Write;
+    use std::sync::{Mutex, OnceLock};
+    use tar::Builder;
+    use tempfile::tempdir;
+
+    fn cwd_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn acquire_cwd_lock() -> std::sync::MutexGuard<'static, ()> {
+        cwd_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    struct CwdGuard {
+        previous: PathBuf,
+    }
+
+    impl CwdGuard {
+        fn enter(path: &Path) -> Result<Self> {
+            let previous = env::current_dir().context("Failed to capture current directory")?;
+            env::set_current_dir(path)
+                .with_context(|| format!("Failed to switch to {}", path.display()))?;
+            Ok(Self { previous })
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = env::set_current_dir(&self.previous);
+        }
+    }
+
+    fn write_local_package_dir(path: &Path, package_name: &str, version: &str) -> Result<()> {
+        fs::create_dir_all(path)
+            .with_context(|| format!("Failed to create package dir {}", path.display()))?;
+        let package_json = serde_json::json!({
+            "name": package_name,
+            "version": version
+        });
+        fs::write(
+            path.join("package.json"),
+            serde_json::to_string_pretty(&package_json)?,
+        )
+        .with_context(|| format!("Failed to write package.json in {}", path.display()))?;
+        fs::write(path.join("index.js"), "export default 1;")
+            .with_context(|| format!("Failed to write index.js in {}", path.display()))?;
+        Ok(())
+    }
+
+    fn write_tgz_package(path: &Path, package_name: &str, version: &str) -> Result<()> {
+        let tar_gz = fs::File::create(path)
+            .with_context(|| format!("Failed to create tarball {}", path.display()))?;
+        let encoder = GzEncoder::new(tar_gz, Compression::default());
+        let mut builder = Builder::new(encoder);
+
+        let package_json = serde_json::json!({
+            "name": package_name,
+            "version": version
+        });
+        let package_json_bytes = serde_json::to_vec(&package_json)?;
+        let mut header = tar::Header::new_gnu();
+        header.set_size(package_json_bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder.append_data(
+            &mut header,
+            "package/package.json",
+            package_json_bytes.as_slice(),
+        )?;
+
+        let index_bytes = b"export default 1;";
+        let mut index_header = tar::Header::new_gnu();
+        index_header.set_size(index_bytes.len() as u64);
+        index_header.set_mode(0o644);
+        index_header.set_cksum();
+        builder.append_data(&mut index_header, "package/index.js", &index_bytes[..])?;
+
+        let mut encoder = builder.into_inner()?;
+        encoder.flush()?;
+        encoder.finish()?;
+        Ok(())
+    }
 
     #[test]
     fn test_specifier_from_string_jsr() {
@@ -1348,8 +1806,8 @@ mod tests {
         let versions = vec!["1.0.0", "1.2.0", "2.0.0"]
             .into_iter()
             .map(String::from);
-        let selected = select_latest_compatible_version(versions, Some("2.0.0"), Some("^1.0.0"))
-            .unwrap();
+        let selected =
+            select_latest_compatible_version(versions, Some("2.0.0"), Some("^1.0.0")).unwrap();
         assert_eq!(selected, "1.2.0");
     }
 
@@ -1358,8 +1816,7 @@ mod tests {
         let versions = vec!["1.0.0", "1.2.0", "1.3.0"]
             .into_iter()
             .map(String::from);
-        let selected =
-            select_latest_compatible_version(versions, Some("1.2.0"), None).unwrap();
+        let selected = select_latest_compatible_version(versions, Some("1.2.0"), None).unwrap();
         assert_eq!(selected, "1.2.0");
     }
 
@@ -1449,7 +1906,11 @@ mod tests {
 
     #[test]
     fn test_should_skip_reinstall_when_not_installed() {
-        assert!(!should_skip_reinstall(None, "package-that-does-not-exist", "1.0.0"));
+        assert!(!should_skip_reinstall(
+            None,
+            "package-that-does-not-exist",
+            "1.0.0"
+        ));
     }
 
     #[test]
@@ -1467,5 +1928,270 @@ mod tests {
         assert_eq!(prod.summary_suffix(), "");
         assert_eq!(with_dev.dependency_scope_label(), "development");
         assert_eq!(with_dev.summary_suffix(), " (prod + dev)");
+    }
+
+    #[test]
+    fn test_requests_from_import_map_supports_file_http_and_https() {
+        let mut imports = HashMap::new();
+        imports.insert("local-pkg".to_string(), "file:./pkg".to_string());
+        imports.insert(
+            "remote-pkg".to_string(),
+            "https://example.com/remote.tgz".to_string(),
+        );
+        imports.insert(
+            "remote-http-pkg".to_string(),
+            "http://example.com/remote-http.tgz".to_string(),
+        );
+
+        let map = ImportMap {
+            imports,
+            scopes: None,
+        };
+
+        let requests = requests_from_import_map(&map, false).unwrap();
+        assert_eq!(requests.len(), 3);
+
+        let kinds: Vec<String> = requests.iter().map(|req| req.kind.clone()).collect();
+        assert!(kinds.contains(&"file".to_string()));
+        assert!(kinds.contains(&"http".to_string()));
+        assert!(kinds.contains(&"https".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_install_from_lockfile_supports_file_directory_package() {
+        let _lock = acquire_cwd_lock();
+        let temp = tempdir().unwrap();
+        let _cwd = CwdGuard::enter(temp.path()).unwrap();
+
+        let local_pkg_dir = temp.path().join("pkg");
+        write_local_package_dir(&local_pkg_dir, "local-pkg", "1.2.3").unwrap();
+
+        let lock = EspmLock {
+            version: 1,
+            packages: vec![LockPackage {
+                id: "file:local-pkg".to_string(),
+                source: "file:./pkg".to_string(),
+                resolved_version: "1.2.3".to_string(),
+                tarball: local_pkg_dir.to_string_lossy().to_string(),
+                requested: None,
+                dev: false,
+            }],
+        };
+
+        let installed = install_from_lockfile(
+            &lock,
+            InstallOptions {
+                include_dev: false,
+                force: true,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(installed, 1);
+        assert!(temp
+            .path()
+            .join("node_modules/local-pkg/package.json")
+            .exists());
+    }
+
+    #[tokio::test]
+    async fn test_install_command_writes_file_dependency_into_lockfile() {
+        let _lock = acquire_cwd_lock();
+        let temp = tempdir().unwrap();
+        let _cwd = CwdGuard::enter(temp.path()).unwrap();
+
+        let local_pkg_dir = temp.path().join("pkg");
+        write_local_package_dir(&local_pkg_dir, "local-pkg", "1.2.3").unwrap();
+
+        let espm = serde_json::json!({
+            "name": "demo",
+            "import_map": {
+                "imports": {
+                    "local-pkg": "file:./pkg"
+                }
+            }
+        });
+        fs::write(
+            temp.path().join("espm.json"),
+            serde_json::to_string_pretty(&espm).unwrap(),
+        )
+        .unwrap();
+
+        handle_install_command(false, true).await.unwrap();
+
+        let lock_content = fs::read_to_string(temp.path().join("espm-lock.json")).unwrap();
+        let lock: EspmLock = serde_json::from_str(&lock_content).unwrap();
+        assert_eq!(lock.packages.len(), 1);
+        assert_eq!(lock.packages[0].id, "file:local-pkg");
+        assert_eq!(lock.packages[0].source, "file:./pkg");
+        let expected_path = local_pkg_dir.canonicalize().unwrap();
+        let actual_path = PathBuf::from(&lock.packages[0].tarball)
+            .canonicalize()
+            .unwrap();
+        assert_eq!(actual_path, expected_path);
+        assert!(temp
+            .path()
+            .join("node_modules/local-pkg/package.json")
+            .exists());
+    }
+
+    #[tokio::test]
+    async fn test_remove_command_cleans_file_dependency_artifacts() {
+        let _lock = acquire_cwd_lock();
+        let temp = tempdir().unwrap();
+        let _cwd = CwdGuard::enter(temp.path()).unwrap();
+
+        let espm = serde_json::json!({
+            "name": "demo",
+            "import_map": {
+                "imports": {
+                    "local-pkg": "file:./pkg"
+                }
+            }
+        });
+        fs::write(
+            temp.path().join("espm.json"),
+            serde_json::to_string_pretty(&espm).unwrap(),
+        )
+        .unwrap();
+
+        let installed_dir = temp.path().join("node_modules/local-pkg");
+        fs::create_dir_all(&installed_dir).unwrap();
+        fs::write(installed_dir.join("package.json"), "{}").unwrap();
+
+        handle_remove_command("local-pkg".to_string())
+            .await
+            .unwrap();
+
+        assert!(!installed_dir.exists());
+        let updated_content = fs::read_to_string(temp.path().join("espm.json")).unwrap();
+        let updated: EspmJson = serde_json::from_str(&updated_content).unwrap();
+        assert!(updated
+            .import_map
+            .map(|map| map.imports.is_empty())
+            .unwrap_or(true));
+    }
+
+    #[tokio::test]
+    async fn test_update_keeps_file_dependency_unchanged() {
+        let _lock = acquire_cwd_lock();
+        let temp = tempdir().unwrap();
+        let _cwd = CwdGuard::enter(temp.path()).unwrap();
+
+        let espm = serde_json::json!({
+            "name": "demo",
+            "import_map": {
+                "imports": {
+                    "local-pkg": "file:./pkg"
+                }
+            }
+        });
+        fs::write(
+            temp.path().join("espm.json"),
+            serde_json::to_string_pretty(&espm).unwrap(),
+        )
+        .unwrap();
+
+        handle_update_command("local-pkg".to_string())
+            .await
+            .unwrap();
+
+        let updated_content = fs::read_to_string(temp.path().join("espm.json")).unwrap();
+        let updated: EspmJson = serde_json::from_str(&updated_content).unwrap();
+        assert_eq!(
+            updated
+                .import_map
+                .unwrap()
+                .imports
+                .get("local-pkg")
+                .unwrap(),
+            "file:./pkg"
+        );
+    }
+
+    #[test]
+    fn test_package_identity_from_file_tarball() {
+        let temp = tempdir().unwrap();
+        let tarball_path = temp.path().join("local-pkg.tgz");
+        write_tgz_package(&tarball_path, "local-pkg", "9.9.9").unwrap();
+
+        let spec =
+            Specifier::from_string(&format!("file:{}", tarball_path.to_string_lossy())).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (scope, name, version) = runtime
+            .block_on(package_identity_from_specifier(&spec, temp.path()))
+            .unwrap();
+
+        assert!(scope.is_none());
+        assert_eq!(name, "local-pkg");
+        assert_eq!(version.as_deref(), Some("9.9.9"));
+    }
+
+    #[tokio::test]
+    async fn test_add_command_refreshes_stale_lockfile() {
+        let _lock = acquire_cwd_lock();
+        let temp = tempdir().unwrap();
+        let _cwd = CwdGuard::enter(temp.path()).unwrap();
+
+        let existing_pkg_dir = temp.path().join("existing-pkg");
+        write_local_package_dir(&existing_pkg_dir, "existing-pkg", "1.0.0").unwrap();
+
+        let new_pkg_dir = temp.path().join("new-pkg");
+        write_local_package_dir(&new_pkg_dir, "new-pkg", "2.0.0").unwrap();
+
+        let espm = serde_json::json!({
+            "name": "demo",
+            "import_map": {
+                "imports": {
+                    "existing-pkg": "file:./existing-pkg"
+                }
+            }
+        });
+        fs::write(
+            temp.path().join("espm.json"),
+            serde_json::to_string_pretty(&espm).unwrap(),
+        )
+        .unwrap();
+
+        let stale_lock = EspmLock {
+            version: 1,
+            packages: vec![LockPackage {
+                id: "file:existing-pkg".to_string(),
+                source: "file:./existing-pkg".to_string(),
+                resolved_version: "1.0.0".to_string(),
+                tarball: existing_pkg_dir.to_string_lossy().to_string(),
+                requested: None,
+                dev: false,
+            }],
+        };
+        fs::write(
+            temp.path().join("espm-lock.json"),
+            serde_json::to_string_pretty(&stale_lock).unwrap(),
+        )
+        .unwrap();
+
+        handle_add_command("file:./new-pkg".to_string(), false)
+            .await
+            .unwrap();
+
+        let lock_content = fs::read_to_string(temp.path().join("espm-lock.json")).unwrap();
+        let lock: EspmLock = serde_json::from_str(&lock_content).unwrap();
+        assert_eq!(lock.packages.len(), 2);
+        assert!(lock
+            .packages
+            .iter()
+            .any(|pkg| pkg.id == "file:existing-pkg" && pkg.source == "file:./existing-pkg"));
+        assert!(lock
+            .packages
+            .iter()
+            .any(|pkg| pkg.id == "file:new-pkg" && pkg.source == "file:./new-pkg"));
+
+        let updated_content = fs::read_to_string(temp.path().join("espm.json")).unwrap();
+        let updated: EspmJson = serde_json::from_str(&updated_content).unwrap();
+        assert_eq!(
+            updated.import_map.unwrap().imports.get("new-pkg").unwrap(),
+            "file:./new-pkg"
+        );
     }
 }

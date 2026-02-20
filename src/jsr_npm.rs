@@ -27,7 +27,6 @@ pub struct JsrNpmRegistryResponse {
     pub time: std::collections::HashMap<String, String>,
 }
 
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NPMAuthor {
     pub name: Option<String>,
@@ -168,7 +167,10 @@ mod tests {
         }"#;
 
         let parsed: JsrNpmRegistryResponse = serde_json::from_str(raw).unwrap();
-        assert_eq!(parsed.dist_tags.get("latest").map(String::as_str), Some("1.0.0"));
+        assert_eq!(
+            parsed.dist_tags.get("latest").map(String::as_str),
+            Some("1.0.0")
+        );
         assert!(parsed.versions.contains_key("1.0.0"));
     }
 
@@ -195,7 +197,10 @@ mod tests {
 
         let parsed: NPMRegistryResponse = serde_json::from_str(raw).unwrap();
         assert_eq!(parsed.name, "chalk");
-        assert_eq!(parsed.dist_tags.get("latest").map(String::as_str), Some("4.1.2"));
+        assert_eq!(
+            parsed.dist_tags.get("latest").map(String::as_str),
+            Some("4.1.2")
+        );
         assert!(parsed.versions.contains_key("4.1.2"));
     }
 }

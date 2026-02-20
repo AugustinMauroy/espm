@@ -18,9 +18,7 @@ pub enum Commands {
         dev: bool,
     },
     #[clap(name = "remove", about = "Remove a dependency")]
-    Remove {
-        package: String,
-    },
+    Remove { package: String },
     #[clap(name = "install", about = "Install dependencies")]
     Install {
         #[clap(short, long, default_value = "false")]

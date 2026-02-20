@@ -37,6 +37,7 @@ pub struct LockPackage {
 
 #[derive(Clone, Debug)]
 pub struct DependencyRequest {
+    pub source: String,
     pub kind: String,
     pub scope: Option<String>,
     pub name: String,
@@ -46,6 +47,7 @@ pub struct DependencyRequest {
 
 #[derive(Clone, Debug)]
 pub struct ResolvedPackage {
+    pub kind: String,
     pub key: String,
     pub source: String,
     pub scope: Option<String>,
