@@ -27,11 +27,17 @@
     - Remote URL: `http(s)://<url_to_package_tarball>` (e.g., `https://example.com/my-package.tgz`)
   - Options:
     - `-d`, `--dev`: Add the package as a development dependency. It will be added to `import_map_dev` in `espm.json`.
-  - Action: Adds the specified package to the project's `espm.json` file (either to `imports` or `import_map_dev.imports`) and installs it into the `node_modules` directory via the local cache.
+  - Action: Adds the specified package to the project's `espm.json` file (either to `imports` or `import_map_dev.imports`) and installs it into `node_modules`.
 
-`espm install`
-  - Action: Downloads and installs all dependencies (production and development) listed in the `espm.json` file (`import_map.imports` and `import_map_dev.imports`). Packages are sourced from the local cache, downloaded if not present, and symlinked into the project's `node_modules` directory.
-  - `--dev`: If specified, also installs development dependencies from `import_map_dev.imports`.
+`espm install` [`--dev`] [`--force`]
+  - Action:
+    - Installs dependencies from `espm-lock.json` when the lockfile is present (deterministic install).
+    - Falls back to resolving dependencies from `espm.json` when no lockfile is available.
+    - Skips reinstalling packages already present in `node_modules` with the expected version.
+  - Options:
+    - `--dev`: Also includes dependencies from `import_map_dev.imports`.
+    - `--force`: Reinstalls packages even when the same version is already installed.
+  - Output: Updates/creates `espm-lock.json` after a resolver-based install.
 
 `espm update <package_name>`
   - `<package_name>`: The name of the package to update as it appears as a key in `espm.json`'s import maps (e.g., `lodash`, `@foo/bar`).
@@ -54,15 +60,25 @@
 ## Managing Dependencies
 
 - **Adding Packages**: Use `espm add <package_source>` to add a new dependency. This updates `espm.json` and installs the package. Use the `-d` flag for development-only dependencies.
-- **Installing All Dependencies**: Use `espm install` to download and set up all packages defined in `espm.json` (both production and development). This is typically run after cloning a project or pulling changes.
+- **Installing All Dependencies**: Use `espm install` to perform a lockfile-first deterministic install. If no `espm-lock.json` exists, `espm` resolves from `espm.json`, installs packages, and writes `espm-lock.json`.
+- **Skipping Existing Packages**: During install, `espm` checks installed package versions in `node_modules` and skips packages already at the expected version.
+- **Forcing Reinstall**: Use `espm install --force` to reinstall everything (or everything selected by `--dev`) even if versions already match.
 - **Updating Packages**: Use `espm update <package_name>` to upgrade a specific JSR or NPM package to its latest allowed version. This updates `espm.json` and the installed package.
 - **Removing Packages**: Use `espm remove <package_name>` to delete a dependency from `espm.json` and remove it from `node_modules`.
-- **Caching and `node_modules`**: `espm` downloads packages to a central cache directory (e.g., `~/.espm/cache`). In your project's `node_modules` directory, it creates symlinks to the actual files in the cache. This saves disk space and speeds up installation for commonly used packages across projects.
+- **`node_modules` behavior**: `espm` downloads package tarballs and extracts them into the project's `node_modules` directory.
+
+### Install examples
+
+- `espm install` → lockfile-first install for production dependencies.
+- `espm install --dev` → lockfile-first install including development dependencies.
+- `espm install --force` → force reinstall of production dependencies.
+- `espm install --dev --force` → force reinstall of production + development dependencies.
 
 
 ## Files
 
 - `espm.json(c)` - ???
+- `espm-lock.json` - Lockfile containing resolved package versions and tarball URLs used for deterministic installs.
 
 ```jsonc
 {

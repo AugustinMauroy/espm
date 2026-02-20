@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema",
   "$id": "TBD",
   "title": "ESPM Configuration File Schema",
-  "description": "Schema for the ESPM package manager configuration file",
+  "description": "Schema for the ESPM package manager configuration file (espm.json only; does not define lockfile or CLI command flags)",
   "type": "object",
   "required": ["name"],
   "properties": {

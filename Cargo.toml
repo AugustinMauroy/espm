@@ -14,3 +14,4 @@ reqwest = { version = "0.11", features = ["json"] }
 flate2 = "1.0"
 tar = "0.4"
 anyhow = "1.0"
+semver = "1.0"
