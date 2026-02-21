@@ -2,3 +2,4 @@
 node_modules
 espm.json
 espm-lock.json
+benchmark_results.json
